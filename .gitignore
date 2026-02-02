@@ -1,0 +1,15 @@
+.env
+*.session
+*.session-journal
+cannibal.db
+chroma/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

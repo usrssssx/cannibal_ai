@@ -4,10 +4,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from .config import get_settings
+from .config import Settings
 
 
 class Base(DeclarativeBase):
@@ -48,19 +48,28 @@ class Post(Base):
     channel: Mapped["Channel"] = relationship(back_populates="posts")
 
 
-_settings = get_settings()
-_engine = create_async_engine(_settings.sqlite_url, echo=False, future=True)
-_session_factory = async_sessionmaker(
-    _engine, expire_on_commit=False, class_=AsyncSession
-)
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def init_engine(settings: Settings) -> None:
+    global _engine, _session_factory
+    _engine = create_async_engine(settings.sqlite_url, echo=False, future=True)
+    _session_factory = async_sessionmaker(
+        _engine, expire_on_commit=False, class_=AsyncSession
+    )
 
 
 @asynccontextmanager
 async def get_session():
+    if _session_factory is None:
+        raise RuntimeError("Database engine is not initialized")
     async with _session_factory() as session:
         yield session
 
 
 async def init_db() -> None:
+    if _engine is None:
+        raise RuntimeError("Database engine is not initialized")
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

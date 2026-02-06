@@ -1,4 +1,6 @@
 .env
+cannibal_core/.env
+.DS_Store
 *.session
 *.session-journal
 cannibal.db

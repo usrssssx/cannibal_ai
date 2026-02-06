@@ -7,7 +7,7 @@ from loguru import logger
 
 from .brain import Brain
 from .config import get_settings
-from .database import init_db
+from .database import init_db, init_engine
 from .deduplicator import Deduplicator
 from .listener import Listener
 from .llm_client import LLMClient
@@ -20,6 +20,7 @@ async def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level=settings.log_level)
 
+    init_engine(settings)
     await init_db()
 
     llm_client = LLMClient(settings)
@@ -29,8 +30,9 @@ async def main() -> None:
         vector_store=vector_store,
         threshold=settings.duplicate_threshold,
     )
-    brain = Brain(llm_client)
+    brain = Brain(llm_client, settings)
     processor = Processor(settings, deduplicator, brain, vector_store)
+    await processor.start()
     listener = Listener(settings, processor)
 
     await listener.start()

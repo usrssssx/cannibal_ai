@@ -31,8 +31,11 @@ class VectorStore:
             "documents": [document],
             "metadatas": [metadata],
         }
-        await asyncio.to_thread(self._collection.add, **payload)
-        logger.debug("Vector stored: {}", doc_id)
+        try:
+            await asyncio.to_thread(self._collection.add, **payload)
+            logger.debug("Vector stored: {}", doc_id)
+        except Exception:
+            logger.exception("Failed to store vector: {}", doc_id)
 
     async def query_similar(
         self,
@@ -54,5 +57,9 @@ class VectorStore:
                 include=["distances", "metadatas", "documents", "ids"],
             )
 
-        result = await asyncio.to_thread(_query)
-        return result
+        try:
+            result = await asyncio.to_thread(_query)
+            return result
+        except Exception:
+            logger.exception("Vector query failed")
+            return {"distances": [[]], "ids": [[]]}

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from loguru import logger
 from telethon import TelegramClient, events
 
@@ -44,24 +42,16 @@ class Listener:
             logger.info("Ad filtered")
             return
 
-        chat = await event.get_chat()
+        chat = event.chat
+        channel_id = event.chat_id
         channel_name = getattr(chat, "username", None) or getattr(chat, "title", None)
-        channel_name = channel_name or str(getattr(chat, "id", "unknown"))
-        channel_id = getattr(chat, "id", None)
+        channel_name = channel_name or str(channel_id or "unknown")
 
-        task = asyncio.create_task(
-            self._processor.handle_message(
-                channel_name=channel_name,
-                channel_id=channel_id,
-                message_id=message.id,
-                text=text,
-            )
+        await self._processor.enqueue(
+            {
+                "channel_name": channel_name,
+                "channel_id": channel_id,
+                "message_id": message.id,
+                "text": text,
+            }
         )
-        task.add_done_callback(self._log_task_error)
-
-    @staticmethod
-    def _log_task_error(task: asyncio.Task) -> None:
-        try:
-            task.result()
-        except Exception:
-            logger.exception("Message processing failed")

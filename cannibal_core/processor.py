@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -25,6 +26,29 @@ class Processor:
         self._deduplicator = deduplicator
         self._brain = brain
         self._vector_store = vector_store
+        self._queue: asyncio.Queue[dict] = asyncio.Queue(
+            maxsize=settings.processor_queue_size
+        )
+        self._workers: list[asyncio.Task] = []
+
+    async def start(self) -> None:
+        if self._workers:
+            return
+        for _ in range(self._settings.processor_workers):
+            self._workers.append(asyncio.create_task(self._worker()))
+
+    async def enqueue(self, payload: dict) -> None:
+        await self._queue.put(payload)
+
+    async def _worker(self) -> None:
+        while True:
+            payload = await self._queue.get()
+            try:
+                await self.handle_message(**payload)
+            except Exception:
+                logger.exception("Message processing failed")
+            finally:
+                self._queue.task_done()
 
     async def handle_message(
         self,
@@ -33,6 +57,7 @@ class Processor:
         message_id: int,
         text: str,
     ) -> None:
+        text = text[: self._settings.max_chars]
         logger.info("New post detected from {}", channel_name)
         await self._store_raw_post(channel_name, channel_id, message_id, text)
 

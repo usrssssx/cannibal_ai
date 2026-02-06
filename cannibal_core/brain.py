@@ -2,20 +2,28 @@ from __future__ import annotations
 
 from loguru import logger
 
+from .config import Settings
 from .llm_client import LLMClient
-
-STYLE_EXAMPLES = [
-    "Market wrap: risk assets pushed higher as traders priced in a softer policy outlook.",
-    "Quick take: the numbers look better than expected, but guidance remains cautious.",
-    "Focus: liquidity is tightening, so short-term rallies may fade without confirmation.",
-    "Update: the move was sharp, yet follow-through stays limited across majors.",
-]
 
 
 class Brain:
-    def __init__(self, llm_client: LLMClient) -> None:
+    def __init__(self, llm_client: LLMClient, settings: Settings) -> None:
         self._llm_client = llm_client
+        self._settings = settings
+
+    @staticmethod
+    def _is_cyrillic(text: str) -> bool:
+        for ch in text:
+            ch_lower = ch.lower()
+            if "а" <= ch_lower <= "я":
+                return True
+        return False
 
     async def generate(self, text: str) -> str:
         logger.info("Generating rewritten post")
-        return await self._llm_client.rewrite(text, STYLE_EXAMPLES)
+        examples = (
+            self._settings.style_examples_ru
+            if self._is_cyrillic(text)
+            else self._settings.style_examples_en
+        )
+        return await self._llm_client.rewrite(text, examples)

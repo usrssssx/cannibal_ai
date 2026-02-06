@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+import httpx
 from loguru import logger
 from openai import AsyncOpenAI
 from openai import OpenAIError
@@ -20,30 +21,52 @@ def _log_retry(retry_state) -> None:
 
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self._model = settings.openai_model
-        self._embedding_model = settings.openai_embedding_model
+        self._provider = settings.llm_provider.lower().strip()
+        if self._provider == "openai":
+            self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+            self._http: httpx.AsyncClient | None = None
+            self._model = settings.openai_model
+            self._embedding_model = settings.openai_embedding_model
+        else:
+            self._client = None
+            self._http = httpx.AsyncClient(
+                base_url=settings.ollama_base_url,
+                timeout=httpx.Timeout(60.0),
+            )
+            self._model = settings.ollama_model
+            self._embedding_model = settings.ollama_embedding_model
 
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type(OpenAIError),
+        retry=retry_if_exception_type((OpenAIError, httpx.HTTPError)),
         before_sleep=_log_retry,
     )
     async def embed(self, text: str) -> list[float]:
         logger.debug("Requesting embedding")
-        response = await self._client.embeddings.create(
-            model=self._embedding_model,
-            input=text,
+        if self._provider == "openai":
+            response = await self._client.embeddings.create(
+                model=self._embedding_model,
+                input=text,
+            )
+            return response.data[0].embedding
+
+        if not self._http:
+            raise RuntimeError("Ollama client is not initialized")
+        response = await self._http.post(
+            "/api/embeddings",
+            json={"model": self._embedding_model, "prompt": text},
         )
-        return response.data[0].embedding
+        response.raise_for_status()
+        data = response.json()
+        return data["embedding"]
 
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type(OpenAIError),
+        retry=retry_if_exception_type((OpenAIError, httpx.HTTPError)),
         before_sleep=_log_retry,
     )
     async def rewrite(self, text: str, style_examples: Iterable[str]) -> str:
@@ -62,13 +85,32 @@ class LLMClient:
             f"{text}\n\n"
             "Rewrite the source post in the same tone and language as the examples."
         )
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.4,
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        if self._provider == "openai":
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=0.4,
+            )
+            content = response.choices[0].message.content or ""
+            return content.strip()
+
+        if not self._http:
+            raise RuntimeError("Ollama client is not initialized")
+        response = await self._http.post(
+            "/api/chat",
+            json={
+                "model": self._model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": 0.4},
+            },
         )
-        content = response.choices[0].message.content or ""
+        response.raise_for_status()
+        data = response.json()
+        content = (data.get("message") or {}).get("content") or ""
         return content.strip()

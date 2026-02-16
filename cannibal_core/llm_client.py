@@ -36,6 +36,18 @@ class LLMClient:
             self._model = settings.ollama_model
             self._embedding_model = settings.ollama_embedding_model
 
+    async def health_check(self) -> None:
+        if self._provider != "ollama":
+            return
+        if not self._http:
+            raise RuntimeError("Ollama client is not initialized")
+        try:
+            response = await self._http.get("/api/tags", timeout=5.0)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.error("Ollama health check failed: {}", exc)
+            raise
+
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
@@ -69,7 +81,12 @@ class LLMClient:
         retry=retry_if_exception_type((OpenAIError, httpx.HTTPError)),
         before_sleep=_log_retry,
     )
-    async def rewrite(self, text: str, style_examples: Iterable[str]) -> str:
+    async def rewrite(
+        self,
+        text: str,
+        style_examples: Iterable[str],
+        style_profile: str | None = None,
+    ) -> str:
         style_block = "\n\n".join(
             f"Example {idx + 1}:\n{example}" for idx, example in enumerate(style_examples)
         )
@@ -78,13 +95,15 @@ class LLMClient:
             "keep the admin tone, and avoid adding new information. Be concise and "
             "informative."
         )
-        user_prompt = (
-            "Style examples:\n"
-            f"{style_block}\n\n"
-            "Source post:\n"
-            f"{text}\n\n"
+        prompt_parts = []
+        if style_profile:
+            prompt_parts.append("Style profile:\n" + style_profile)
+        prompt_parts.append("Style examples:\n" + style_block)
+        prompt_parts.append("Source post:\n" + text)
+        prompt_parts.append(
             "Rewrite the source post in the same tone and language as the examples."
         )
+        user_prompt = "\n\n".join(prompt_parts)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

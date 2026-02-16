@@ -37,6 +37,25 @@ class VectorStore:
         except Exception:
             logger.exception("Failed to store vector: {}", doc_id)
 
+    async def upsert(
+        self,
+        doc_id: str,
+        embedding: list[float],
+        document: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        payload = {
+            "ids": [doc_id],
+            "embeddings": [embedding],
+            "documents": [document],
+            "metadatas": [metadata],
+        }
+        try:
+            await asyncio.to_thread(self._collection.upsert, **payload)
+            logger.debug("Vector upserted: {}", doc_id)
+        except Exception:
+            logger.exception("Failed to upsert vector: {}", doc_id)
+
     async def query_similar(
         self,
         embedding: list[float],

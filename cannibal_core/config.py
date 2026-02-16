@@ -4,6 +4,23 @@ from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import DotEnvSettingsSource, EnvSettingsSource
+
+
+class _LenientEnvSettingsSource(EnvSettingsSource):
+    def decode_complex_value(self, field_name, field, value):
+        try:
+            return super().decode_complex_value(field_name, field, value)
+        except ValueError:
+            return value
+
+
+class _LenientDotEnvSettingsSource(DotEnvSettingsSource):
+    def decode_complex_value(self, field_name, field, value):
+        try:
+            return super().decode_complex_value(field_name, field, value)
+        except ValueError:
+            return value
 
 
 class Settings(BaseSettings):
@@ -14,12 +31,51 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        config = settings_cls.model_config
+        env = _LenientEnvSettingsSource(
+            settings_cls,
+            case_sensitive=config.get("case_sensitive"),
+            env_prefix=config.get("env_prefix"),
+            env_nested_delimiter=config.get("env_nested_delimiter"),
+            env_nested_max_split=config.get("env_nested_max_split"),
+            env_ignore_empty=config.get("env_ignore_empty"),
+            env_parse_none_str=config.get("env_parse_none_str"),
+            env_parse_enums=config.get("env_parse_enums"),
+        )
+        dotenv = _LenientDotEnvSettingsSource(
+            settings_cls,
+            env_file=config.get("env_file"),
+            env_file_encoding=config.get("env_file_encoding"),
+            case_sensitive=config.get("case_sensitive"),
+            env_prefix=config.get("env_prefix"),
+            env_nested_delimiter=config.get("env_nested_delimiter"),
+            env_nested_max_split=config.get("env_nested_max_split"),
+            env_ignore_empty=config.get("env_ignore_empty"),
+            env_parse_none_str=config.get("env_parse_none_str"),
+            env_parse_enums=config.get("env_parse_enums"),
+        )
+        return (
+            init_settings,
+            env,
+            dotenv,
+            file_secret_settings,
+        )
+
     telethon_api_id: int
     telethon_api_hash: str
     telethon_session: str = "cannibal_userbot"
     target_channels: list[str] = Field(default_factory=list)
 
-    llm_provider: str = "openai"
+    llm_provider: str = "ollama"
 
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
@@ -32,12 +88,14 @@ class Settings(BaseSettings):
     sqlite_path: str = "./cannibal.db"
     chroma_persist_dir: str = "./chroma"
     chroma_collection: str = "cannibal_posts"
+    output_path: str = "./output.txt"
 
     duplicate_threshold: float = 0.85
 
     processor_workers: int = 4
     processor_queue_size: int = 1000
     max_chars: int = 8000
+    style_profile_posts: int = 80
 
     style_examples_ru: list[str] = Field(
         default_factory=lambda: [
@@ -102,6 +160,15 @@ class Settings(BaseSettings):
             raise ValueError("LLM_PROVIDER must be 'openai' or 'ollama'")
         if provider == "openai" and not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+        if provider == "ollama":
+            if not self.ollama_base_url:
+                raise ValueError("OLLAMA_BASE_URL is required when LLM_PROVIDER=ollama")
+            if not self.ollama_model:
+                raise ValueError("OLLAMA_MODEL is required when LLM_PROVIDER=ollama")
+            if not self.ollama_embedding_model:
+                raise ValueError(
+                    "OLLAMA_EMBEDDING_MODEL is required when LLM_PROVIDER=ollama"
+                )
         return self
 
     @property

@@ -12,6 +12,7 @@ from .deduplicator import Deduplicator
 from .listener import Listener
 from .llm_client import LLMClient
 from .processor import Processor
+from .style_profile import build_style_profiles
 from .vector_store import VectorStore
 
 
@@ -24,6 +25,7 @@ async def main() -> None:
     await init_db()
 
     llm_client = LLMClient(settings)
+    await llm_client.health_check()
     vector_store = VectorStore(settings)
     deduplicator = Deduplicator(
         llm_client=llm_client,
@@ -31,7 +33,10 @@ async def main() -> None:
         threshold=settings.duplicate_threshold,
     )
     brain = Brain(llm_client, settings)
-    processor = Processor(settings, deduplicator, brain, vector_store)
+    style_profiles = await build_style_profiles(
+        limit=settings.style_profile_posts,
+    )
+    processor = Processor(settings, deduplicator, brain, vector_store, style_profiles)
     await processor.start()
     listener = Listener(settings, processor)
 

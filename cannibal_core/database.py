@@ -3,7 +3,17 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -41,6 +51,13 @@ class Post(Base):
     )
     telegram_msg_id: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    rewritten_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duplicate_of: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )

@@ -19,11 +19,11 @@ class Brain:
                 return True
         return False
 
-    async def generate(self, text: str) -> str:
+    async def generate(self, text: str, style_profile: str | None = None) -> str:
         logger.info("Generating rewritten post")
         examples = (
             self._settings.style_examples_ru
             if self._is_cyrillic(text)
             else self._settings.style_examples_en
         )
-        return await self._llm_client.rewrite(text, examples)
+        return await self._llm_client.rewrite(text, examples, style_profile)

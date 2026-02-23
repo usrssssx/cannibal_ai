@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.cannibal.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/daniilglusenko/Desktop/Cannibal/.venv/bin/python</string>
+      <string>-m</string>
+      <string>cannibal_core.bot</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/daniilglusenko/Desktop/Cannibal</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/bot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/bot.err.log</string>
+  </dict>
+</plist>

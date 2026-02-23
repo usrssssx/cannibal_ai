@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    select,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -65,8 +66,48 @@ class Post(Base):
     channel: Mapped["Channel"] = relationship(back_populates="posts")
 
 
+class WebAppSettings(Base):
+    __tablename__ = "webapp_settings"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    style_channel: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sources_csv: Mapped[str | None] = mapped_column(Text, nullable=True)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    with_images: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WebAppRun(Base):
+    __tablename__ = "webapp_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    style_channel: Mapped[str] = mapped_column(String(255), nullable=False)
+    sources_csv: Mapped[str] = mapped_column(Text, nullable=False)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    with_images: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="started")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class SchemaMeta(Base):
+    __tablename__ = "schema_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+_schema_version: int = 2
 
 
 def init_engine(settings: Settings) -> None:
@@ -90,3 +131,19 @@ async def init_db() -> None:
         raise RuntimeError("Database engine is not initialized")
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    async with get_session() as session:
+        result = await session.execute(select(SchemaMeta))
+        meta = result.scalar_one_or_none()
+        if meta is None:
+            session.add(SchemaMeta(version=_schema_version))
+            await session.commit()
+            return
+        if meta.version != _schema_version:
+            # Avoid breaking; just warn.
+            from loguru import logger
+
+            logger.warning(
+                "Schema version mismatch: db={} expected={}.",
+                meta.version,
+                _schema_version,
+            )

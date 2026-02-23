@@ -32,6 +32,23 @@ class StyleProfileCache:
         return None
 
 
+class StyleExamplesCache:
+    def __init__(
+        self,
+        by_channel_id: dict[int, list[str]],
+        by_channel_name: dict[str, list[str]],
+    ) -> None:
+        self._by_channel_id = by_channel_id
+        self._by_channel_name = by_channel_name
+
+    def get(self, channel_id: int | None, channel_name: str | None) -> list[str] | None:
+        if channel_id is not None and channel_id in self._by_channel_id:
+            return self._by_channel_id[channel_id]
+        if channel_name and channel_name in self._by_channel_name:
+            return self._by_channel_name[channel_name]
+        return None
+
+
 def _split_sentences(text: str) -> list[str]:
     cleaned = re.sub(r"\s+", " ", text.strip())
     if not cleaned:
@@ -218,3 +235,77 @@ async def build_style_profiles(
             by_channel_name[channel.name] = formatted
 
         return StyleProfileCache(by_channel_id, by_channel_name)
+
+
+def _pick_style_examples(
+    texts: list[str],
+    max_examples: int,
+    min_chars: int,
+    max_chars: int,
+) -> list[str]:
+    examples: list[str] = []
+    for text in texts:
+        cleaned = text.strip()
+        if not cleaned:
+            continue
+        if len(cleaned) < min_chars:
+            continue
+        trimmed = cleaned[:max_chars]
+        examples.append(trimmed)
+        if len(examples) >= max_examples:
+            break
+
+    if len(examples) < max_examples:
+        for text in texts:
+            cleaned = text.strip()
+            if not cleaned:
+                continue
+            if cleaned in examples:
+                continue
+            trimmed = cleaned[:max_chars]
+            examples.append(trimmed)
+            if len(examples) >= max_examples:
+                break
+
+    return examples
+
+
+async def build_style_examples(
+    limit: int,
+    max_examples: int,
+    min_chars: int,
+    max_chars: int,
+    channel_names: list[str] | None = None,
+) -> StyleExamplesCache:
+    async with get_session() as session:
+        stmt = select(Channel)
+        if channel_names:
+            stmt = stmt.where(Channel.name.in_(channel_names))
+        result = await session.execute(stmt)
+        channels = result.scalars().all()
+
+        by_channel_id: dict[int, list[str]] = {}
+        by_channel_name: dict[str, list[str]] = {}
+
+        for channel in channels:
+            posts_stmt = (
+                select(Post.text)
+                .where(Post.channel_id == channel.id)
+                .order_by(Post.created_at.desc())
+                .limit(limit)
+            )
+            posts_result = await session.execute(posts_stmt)
+            texts = [row[0] for row in posts_result.all()]
+            examples = _pick_style_examples(
+                texts=texts,
+                max_examples=max_examples,
+                min_chars=min_chars,
+                max_chars=max_chars,
+            )
+            if not examples:
+                continue
+            if channel.telegram_id is not None:
+                by_channel_id[channel.telegram_id] = examples
+            by_channel_name[channel.name] = examples
+
+        return StyleExamplesCache(by_channel_id, by_channel_name)

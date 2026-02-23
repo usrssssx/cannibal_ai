@@ -23,7 +23,12 @@ class FakeBrain:
         self.output = output
         self.calls = 0
 
-    async def generate(self, text: str, style_profile: str | None = None) -> str:
+    async def generate(
+        self,
+        text: str,
+        style_profile: str | None = None,
+        style_examples: list[str] | None = None,
+    ) -> str:
         self.calls += 1
         return self.output
 

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Cannibal Studio</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <div class="backdrop">
+      <div class="orb orb-cyan"></div>
+      <div class="orb orb-amber"></div>
+      <div class="grid-lines"></div>
+    </div>
+
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Telegram WebApp</p>
+          <h1>Cannibal Studio</h1>
+          <p class="subtitle">
+            Переписывайте новости в авторском стиле. Быстро. Аккуратно.
+            Предсказуемо.
+          </p>
+        </div>
+        <div class="hero-card">
+          <div class="user-label">Сессия</div>
+          <div id="userName" class="user-name">Ожидание…</div>
+          <div id="userStatus" class="user-status">WebApp не инициализирован</div>
+        </div>
+      </header>
+
+      <section class="panel-grid">
+        <section class="panel panel-form">
+          <div class="panel-header">
+            <h2>Параметры</h2>
+            <p>Задайте стиль, источники и лимит.</p>
+          </div>
+          <form id="runForm" class="form">
+            <label class="field">
+              <span>Канал для стиля</span>
+              <input
+                id="styleChannel"
+                type="text"
+                placeholder="например: zdravstvuitekuuuu"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span>Источники</span>
+              <textarea
+                id="sourceChannels"
+                rows="3"
+                placeholder="Например: source_one, source_two"
+              ></textarea>
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>Лимит постов</span>
+                <input id="limit" type="number" min="1" max="50" value="1" />
+              </label>
+              <label class="toggle">
+                <input id="withImages" type="checkbox" />
+                <span>Изображения</span>
+              </label>
+            </div>
+            <div class="actions">
+              <button id="runButton" type="submit" class="primary">
+                Запустить
+              </button>
+              <button id="resetButton" type="button" class="ghost">
+                Сброс
+              </button>
+            </div>
+            <div id="formHint" class="hint"></div>
+          </form>
+        </section>
+
+        <section class="panel panel-results">
+          <div class="panel-header">
+            <h2>Результаты</h2>
+            <p id="resultsMeta">Готово к запуску.</p>
+          </div>
+          <div id="progressWrap" class="progress hidden">
+            <div class="progress-label">
+              <span id="progressStep">Подготовка…</span>
+              <span id="progressPercent">0%</span>
+            </div>
+            <div class="progress-bar">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+          </div>
+          <div id="toast" class="toast hidden"></div>
+          <div id="results" class="results"></div>
+        </section>
+
+        <section class="panel panel-history">
+          <div class="panel-header">
+            <h2>История запусков</h2>
+            <p>Последние запросы WebApp.</p>
+          </div>
+          <div id="history" class="history"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

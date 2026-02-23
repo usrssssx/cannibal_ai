@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     telethon_api_id: int
     telethon_api_hash: str
     telethon_session: str = "cannibal_userbot"
+    bot_session: str = "cannibal_bot"
+    webapp_user_session: str = "cannibal_webapp_userbot"
     target_channels: list[str] = Field(default_factory=list)
 
     llm_provider: str = "ollama"
@@ -84,6 +86,38 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:3b-instruct"
     ollama_embedding_model: str = "nomic-embed-text"
+    ollama_temperature: float = 0.4
+    ollama_num_ctx: int | None = None
+    ollama_num_predict: int | None = None
+    ollama_top_p: float | None = None
+    ollama_top_k: int | None = None
+    ollama_repeat_penalty: float | None = None
+    ollama_repeat_last_n: int | None = None
+    ollama_mirostat: int | None = None
+    ollama_mirostat_tau: float | None = None
+    ollama_mirostat_eta: float | None = None
+    ollama_num_thread: int | None = None
+
+    image_enabled: bool = False
+    image_search_provider: str = "pexels"
+    image_generation_provider: str = "replicate"
+    image_safe_only: bool = True
+    image_download: bool = True
+    image_output_dir: str = "./images"
+    image_query_max_words: int = 12
+    image_prompt_style: str = (
+        "photojournalistic, realistic, natural lighting, high detail, no text"
+    )
+
+    pexels_api_key: str | None = None
+    pexels_per_page: int = 1
+    pexels_orientation: str = "landscape"
+
+    replicate_api_token: str | None = None
+    replicate_model_version: str | None = None
+    replicate_poll_interval: float = 1.5
+    replicate_timeout: float = 60.0
+    replicate_negative_prompt: str | None = "nsfw, nude, nudity, gore, violence, text"
 
     sqlite_path: str = "./cannibal.db"
     chroma_persist_dir: str = "./chroma"
@@ -95,7 +129,14 @@ class Settings(BaseSettings):
     processor_workers: int = 4
     processor_queue_size: int = 1000
     max_chars: int = 8000
+    embedding_max_chars: int = 2000
     style_profile_posts: int = 80
+    style_profile_examples: int = 4
+    style_profile_example_limit: int = 200
+    style_profile_example_min_chars: int = 40
+    style_profile_example_max_chars: int = 400
+    rewrite_mode: str = "balanced"
+    rewrite_temperature: float = 0.4
 
     style_examples_ru: list[str] = Field(
         default_factory=lambda: [
@@ -125,6 +166,31 @@ class Settings(BaseSettings):
     )
 
     log_level: str = "INFO"
+    log_file: str | None = None
+    log_rotation: str = "10 MB"
+    log_retention: str = "14 days"
+
+    bot_token: str | None = None
+    bot_allowed_users: list[int] = Field(default_factory=list)
+    bot_style_limit: int = 120
+    bot_source_limit: int = 1
+    bot_guide_url: str | None = None
+    bot_user_session: str = "cannibal_bot_userbot"
+    enforce_allowed_users: bool = True
+
+    webapp_url: str | None = None
+    webapp_host: str = "127.0.0.1"
+    webapp_port: int = 8000
+    webapp_max_age_sec: int = 86400
+    webapp_duplicate_to_chat: bool = True
+    cloudflared_tunnel_token: str | None = None
+
+    telegram_retry_attempts: int = 3
+    telegram_retry_base_delay: float = 1.0
+    telegram_flood_sleep_max: int = 120
+
+    alert_bot_token: str | None = None
+    alert_chat_id: int | None = None
 
     @field_validator("target_channels", mode="before")
     @classmethod
@@ -144,6 +210,30 @@ class Settings(BaseSettings):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
 
+    @field_validator("bot_allowed_users", mode="before")
+    @classmethod
+    def _parse_allowed_users(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",") if part.strip()]
+            return [int(part) for part in parts]
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, list):
+            return [int(part) for part in value]
+        return value
+
+    @field_validator("alert_chat_id", mode="before")
+    @classmethod
+    def _parse_alert_chat_id(cls, value):
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+
     @field_validator("style_examples_ru", "style_examples_en", mode="before")
     @classmethod
     def _parse_style_examples(cls, value):
@@ -151,6 +241,15 @@ class Settings(BaseSettings):
             return []
         if isinstance(value, str):
             return [part.strip() for part in value.split("||") if part.strip()]
+        return value
+
+    @field_validator("rewrite_mode", mode="before")
+    @classmethod
+    def _parse_rewrite_mode(cls, value):
+        if value is None:
+            return "balanced"
+        if isinstance(value, str):
+            return value.strip().lower()
         return value
 
     @model_validator(mode="after")
@@ -169,6 +268,21 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "OLLAMA_EMBEDDING_MODEL is required when LLM_PROVIDER=ollama"
                 )
+        if self.image_enabled:
+            if self.image_search_provider.lower().strip() != "pexels":
+                raise ValueError("IMAGE_SEARCH_PROVIDER must be 'pexels'")
+            if not self.pexels_api_key:
+                raise ValueError("PEXELS_API_KEY is required when IMAGE_ENABLED=true")
+            if self.image_generation_provider.lower().strip() != "replicate":
+                raise ValueError("IMAGE_GENERATION_PROVIDER must be 'replicate'")
+            if not self.replicate_api_token:
+                raise ValueError("REPLICATE_API_TOKEN is required when IMAGE_ENABLED=true")
+            if not self.replicate_model_version:
+                raise ValueError(
+                    "REPLICATE_MODEL_VERSION is required when IMAGE_ENABLED=true"
+                )
+        if self.rewrite_mode not in {"balanced", "aggressive"}:
+            raise ValueError("REWRITE_MODE must be 'balanced' or 'aggressive'")
         return self
 
     @property
@@ -177,6 +291,40 @@ class Settings(BaseSettings):
         if path.is_absolute():
             return f"sqlite+aiosqlite:////{path.as_posix().lstrip('/')}"
         return f"sqlite+aiosqlite:///{path.as_posix()}"
+
+    @property
+    def sqlite_sync_url(self) -> str:
+        path = Path(self.sqlite_path)
+        if path.is_absolute():
+            return f"sqlite:////{path.as_posix().lstrip('/')}"
+        return f"sqlite:///{path.as_posix()}"
+
+    @property
+    def ollama_chat_options(self) -> dict[str, int | float]:
+        options: dict[str, int | float] = {
+            "temperature": self.ollama_temperature,
+        }
+        if self.ollama_num_ctx is not None:
+            options["num_ctx"] = self.ollama_num_ctx
+        if self.ollama_num_predict is not None:
+            options["num_predict"] = self.ollama_num_predict
+        if self.ollama_top_p is not None:
+            options["top_p"] = self.ollama_top_p
+        if self.ollama_top_k is not None:
+            options["top_k"] = self.ollama_top_k
+        if self.ollama_repeat_penalty is not None:
+            options["repeat_penalty"] = self.ollama_repeat_penalty
+        if self.ollama_repeat_last_n is not None:
+            options["repeat_last_n"] = self.ollama_repeat_last_n
+        if self.ollama_mirostat is not None:
+            options["mirostat"] = self.ollama_mirostat
+        if self.ollama_mirostat_tau is not None:
+            options["mirostat_tau"] = self.ollama_mirostat_tau
+        if self.ollama_mirostat_eta is not None:
+            options["mirostat_eta"] = self.ollama_mirostat_eta
+        if self.ollama_num_thread is not None:
+            options["num_thread"] = self.ollama_num_thread
+        return options
 
 
 def get_settings() -> Settings:

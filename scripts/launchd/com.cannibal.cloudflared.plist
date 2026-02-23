@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.cannibal.cloudflared</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/cloudflared</string>
+      <string>tunnel</string>
+      <string>run</string>
+      <string>--token</string>
+      <string>YOUR_CLOUDFLARED_TUNNEL_TOKEN</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/cloudflared.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/cloudflared.err.log</string>
+  </dict>
+</plist>

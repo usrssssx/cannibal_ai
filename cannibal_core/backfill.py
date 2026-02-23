@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
 from .config import get_settings
 from .database import Channel, Post, get_session, init_db, init_engine
+from .alerts import send_alert_sync
 from .llm_client import LLMClient
+from .logging_setup import configure_logging
 from .vector_store import VectorStore
 
 
@@ -57,6 +59,7 @@ async def _store_post(channel_db_id: int, message_id: int, text: str) -> None:
 
 
 async def _backfill_channel(
+    settings,
     client: TelegramClient,
     llm_client: LLMClient,
     vector_store: VectorStore,
@@ -74,32 +77,48 @@ async def _backfill_channel(
     channel = await _get_or_create_channel(channel_name, channel_id)
     logger.info("Backfilling channel {} (limit={})", channel_name, limit)
 
-    async for message in client.iter_messages(entity, limit=limit):
-        text = message.message or ""
-        if not text.strip():
-            continue
-        if _is_ad(text, stop_words):
-            continue
+    attempts = 0
+    while True:
+        try:
+            async for message in client.iter_messages(entity, limit=limit):
+                text = message.message or ""
+                if not text.strip():
+                    continue
+                if _is_ad(text, stop_words):
+                    continue
 
-        trimmed = text[:max_chars]
-        await _store_post(channel.id, message.id, trimmed)
+                trimmed = text[:max_chars]
+                await _store_post(channel.id, message.id, trimmed)
 
-        if not store_embeddings:
-            continue
+                if not store_embeddings:
+                    continue
 
-        embedding = await llm_client.embed(trimmed)
-        doc_id = f"{channel_id or channel_name}:{message.id}"
-        created_at = message.date or datetime.now(tz=timezone.utc)
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        created_ts = created_at.astimezone(timezone.utc).timestamp()
-        metadata = {
-            "channel": channel_name,
-            "channel_id": channel_id,
-            "message_id": message.id,
-            "created_at": created_ts,
-        }
-        await vector_store.upsert(doc_id, embedding, trimmed, metadata)
+                embedding = await llm_client.embed(trimmed)
+                doc_id = f"{channel_id or channel_name}:{message.id}"
+                created_at = message.date or datetime.now(tz=timezone.utc)
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                created_ts = created_at.astimezone(timezone.utc).timestamp()
+                metadata = {
+                    "channel": channel_name,
+                    "channel_id": channel_id,
+                    "message_id": message.id,
+                    "created_at": created_ts,
+                }
+                await vector_store.upsert(doc_id, embedding, trimmed, metadata)
+            break
+        except FloodWaitError as exc:
+            attempts += 1
+            if attempts > settings.telegram_retry_attempts:
+                raise
+            sleep_for = min(exc.seconds, settings.telegram_flood_sleep_max)
+            logger.warning("Telegram flood wait: sleeping {}s", sleep_for)
+            await asyncio.sleep(sleep_for + settings.telegram_retry_base_delay)
+        except Exception:
+            attempts += 1
+            if attempts > settings.telegram_retry_attempts:
+                raise
+            await asyncio.sleep(settings.telegram_retry_base_delay * attempts)
 
 
 async def main() -> None:
@@ -126,8 +145,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    logger.remove()
-    logger.add(sys.stderr, level=settings.log_level)
+    configure_logging(settings)
 
     init_engine(settings)
     await init_db()
@@ -155,6 +173,7 @@ async def main() -> None:
 
     for channel in channels:
         await _backfill_channel(
+            settings=settings,
             client=client,
             llm_client=llm_client,
             vector_store=vector_store,
@@ -169,4 +188,12 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        try:
+            settings = get_settings()
+            send_alert_sync(settings, "cannibal_core.backfill", repr(exc))
+        except Exception:
+            pass
+        raise

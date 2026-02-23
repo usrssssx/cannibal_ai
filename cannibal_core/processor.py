@@ -12,7 +12,8 @@ from .brain import Brain
 from .config import Settings
 from .database import Channel, Post, get_session
 from .deduplicator import Deduplicator
-from .style_profile import StyleProfileCache
+from .image_client import ImageClient, ImageResult
+from .style_profile import StyleExamplesCache, StyleProfileCache
 from .vector_store import VectorStore
 
 
@@ -24,12 +25,16 @@ class Processor:
         brain: Brain,
         vector_store: VectorStore,
         style_profiles: StyleProfileCache | None = None,
+        image_client: ImageClient | None = None,
+        style_examples: StyleExamplesCache | None = None,
     ) -> None:
         self._settings = settings
         self._deduplicator = deduplicator
         self._brain = brain
         self._vector_store = vector_store
         self._style_profiles = style_profiles
+        self._image_client = image_client
+        self._style_examples = style_examples
         self._queue: asyncio.Queue[dict] = asyncio.Queue(
             maxsize=settings.processor_queue_size
         )
@@ -94,9 +99,27 @@ class Processor:
         style_profile = None
         if self._style_profiles:
             style_profile = self._style_profiles.get(channel_id, channel_name)
-        rewritten = await self._brain.generate(text, style_profile)
+        style_examples = None
+        if self._style_examples:
+            style_examples = self._style_examples.get(channel_id, channel_name)
+        rewritten = await self._brain.generate(
+            text,
+            style_profile=style_profile,
+            style_examples=style_examples,
+        )
         logger.info("Generated post:\n{}", rewritten)
-        await self._write_output(channel_name, message_id, rewritten)
+        image_result = None
+        if self._image_client:
+            try:
+                image_result = await self._image_client.get_image(
+                    text=text,
+                    channel_name=channel_name,
+                    message_id=message_id,
+                )
+            except Exception:
+                logger.exception("Image generation failed")
+
+        await self._write_output(channel_name, message_id, rewritten, image_result)
         await self._update_post(
             post_id=post.id,
             rewritten_text=rewritten,
@@ -168,12 +191,29 @@ class Processor:
                 setattr(post, key, value)
             await session.commit()
 
-    async def _write_output(self, channel_name: str, message_id: int, text: str) -> None:
+    async def _write_output(
+        self,
+        channel_name: str,
+        message_id: int,
+        text: str,
+        image: ImageResult | None = None,
+    ) -> None:
         output_path = Path(self._settings.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).isoformat()
         header = f"[{timestamp}] {channel_name} ({message_id})"
-        payload = f"{header}\n{text}\n---\n"
+        lines = [header]
+        if image and (image.url or image.local_path):
+            if image.url:
+                lines.append(f"IMAGE_URL: {image.url}")
+            if image.local_path:
+                lines.append(f"IMAGE_FILE: {image.local_path}")
+            if image.source:
+                lines.append(f"IMAGE_SOURCE: {image.source}")
+            if image.query:
+                lines.append(f"IMAGE_QUERY: {image.query}")
+        lines.append(text)
+        payload = "\n".join(lines) + "\n---\n"
 
         def _append():
             with output_path.open("a", encoding="utf-8") as handle:

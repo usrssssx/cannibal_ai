@@ -168,6 +168,45 @@ cloudflared tunnel run --token $CLOUDFLARED_TUNNEL_TOKEN
 ```bash
 ngrok http 8000
 ```
+Если нужен стабильный URL — используйте reserved domain в ngrok и задайте `NGROK_DOMAIN`.
+
+Авто‑обновление `WEBAPP_URL` из ngrok:
+```bash
+python scripts/update_webapp_url.py
+```
+
+### Admin диагностика
+Для панели статуса и логов:
+```
+ADMIN_TOKEN=your_admin_token
+DATA_RETENTION_DAYS=90
+RUNS_RETENTION_DAYS=90
+LOGS_CLEANUP_DAYS=30
+```
+Открывайте в браузере:
+```
+https://your-public-url/admin
+```
+Токен вводится в интерфейсе и сохраняется локально.
+
+### Maintenance (очистка данных)
+Ручной запуск:
+```bash
+python scripts/cleanup.py
+```
+Очистка включает: старые посты, историю запусков, старые лог‑файлы, старые эмбеддинги.
+
+Автозапуск (launchd):
+```bash
+cp scripts/launchd/com.cannibal.maintenance.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.cannibal.maintenance.plist
+```
+
+### Автозапуск ngrok (опционально)
+```bash
+cp scripts/launchd/com.cannibal.ngrok.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.cannibal.ngrok.plist
+```
 
 ## Настройки (основные)
 - `TARGET_CHANNELS` — список каналов через запятую (username без `@`).
@@ -277,6 +316,22 @@ python -m cannibal_core.webapp_server
 ```
 4) В боте: `/start` → задать стиль/источники → `Запуск`.
 5) В WebApp: заполнить форму → `Запустить`.
+
+## CI/CD
+### CI
+GitHub Actions запускает тесты (`pytest`) на каждый push/PR.
+
+### CD (опционально)
+Добавьте секреты в GitHub:
+```
+DEPLOY_HOST=your.server
+DEPLOY_USER=your_user
+DEPLOY_KEY=-----BEGIN OPENSSH PRIVATE KEY-----
+DEPLOY_PATH=/path/to/cannibal
+DEPLOY_PORT=22
+DEPLOY_COMMAND=launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cannibal.main.plist; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.cannibal.main.plist
+```
+`DEPLOY_COMMAND` можно заменить на ваши команды перезапуска (systemctl/pm2/launchctl).
 
 ## Автозапуск (macOS)
 Шаблоны launchd лежат в `scripts/launchd/`.

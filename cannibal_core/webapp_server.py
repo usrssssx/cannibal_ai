@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
@@ -9,7 +11,7 @@ from urllib.parse import parse_qsl
 import hashlib
 import hmac
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -19,9 +21,9 @@ from telethon import TelegramClient
 from .alerts import send_alert_sync
 from .brain import Brain
 from .config import get_settings
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from .database import WebAppRun, WebAppSettings, get_session, init_db, init_engine
+from .database import Channel, Post, WebAppRun, WebAppSettings, get_session, init_db, init_engine
 from .generation import GenerationError, generate_posts, normalize_channel_ref
 from .image_client import ImageClient
 from .llm_client import LLMClient
@@ -87,6 +89,244 @@ def _split_message(text: str, limit: int = 3500) -> list[str]:
     return parts
 
 
+def _extract_admin_token(request: Request, token: str | None) -> str | None:
+    if token:
+        return token
+    header = request.headers.get("x-admin-token") or request.headers.get("X-Admin-Token")
+    if header:
+        return header
+    return None
+
+
+def _is_local_request(request: Request) -> bool:
+    if not request.client:
+        return False
+    return request.client.host in {"127.0.0.1", "::1"}
+
+
+def _require_admin_access(settings, request: Request, token: str | None) -> None:
+    expected = (settings.admin_token or "").strip()
+    if expected:
+        if token != expected:
+            raise HTTPException(status_code=403, detail="Invalid admin token")
+        return
+    if _is_local_request(request):
+        return
+    raise HTTPException(status_code=401, detail="ADMIN_TOKEN is required")
+
+
+def _format_ts(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def _format_dt(value) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        return value.isoformat()
+    return str(value)
+
+
+def _dir_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _list_log_files(settings) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    log_dir = Path("logs")
+    if log_dir.exists():
+        for path in sorted(log_dir.glob("*.log")):
+            seen.add(path.name)
+            items.append(
+                {
+                    "name": path.name,
+                    "size": path.stat().st_size,
+                    "modified_at": _format_ts(path.stat().st_mtime),
+                }
+            )
+    if settings.log_file:
+        path = Path(settings.log_file)
+        if path.exists() and path.name not in seen:
+            items.append(
+                {
+                    "name": path.name,
+                    "size": path.stat().st_size,
+                    "modified_at": _format_ts(path.stat().st_mtime),
+                }
+            )
+    return items
+
+
+def _resolve_log_path(settings, name: str) -> Path:
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid log name")
+    log_dir = Path("logs")
+    candidate = log_dir / name
+    if candidate.exists():
+        return candidate
+    if settings.log_file:
+        path = Path(settings.log_file)
+        if path.name == name and path.exists():
+            return path
+    raise HTTPException(status_code=404, detail="Log file not found")
+
+
+def _tail_lines(path: Path, max_lines: int) -> list[str]:
+    max_lines = max(1, min(max_lines, 2000))
+    try:
+        with open(path, "rb") as file:
+            file.seek(0, os.SEEK_END)
+            position = file.tell()
+            buffer = bytearray()
+            while position > 0 and buffer.count(b"\n") <= max_lines:
+                read_size = 4096 if position >= 4096 else position
+                position -= read_size
+                file.seek(position)
+                buffer = file.read(read_size) + buffer
+            lines = buffer.splitlines()[-max_lines:]
+            return [line.decode("utf-8", errors="replace") for line in lines]
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Log file not found")
+
+
+async def _get_recent_runs(limit: int = 10) -> list[dict[str, Any]]:
+    async with get_session() as session:
+        stmt = select(WebAppRun).order_by(WebAppRun.created_at.desc()).limit(limit)
+        result = await session.execute(stmt)
+        runs = result.scalars().all()
+    items: list[dict[str, Any]] = []
+    for run in runs:
+        items.append(
+            {
+                "id": run.id,
+                "user_id": run.user_id,
+                "style_channel": run.style_channel,
+                "sources": [
+                    part for part in (run.sources_csv or "").split(",") if part.strip()
+                ],
+                "limit": run.limit,
+                "with_images": run.with_images,
+                "status": run.status,
+                "error": run.error,
+                "posts_count": run.posts_count,
+                "created_at": _format_dt(run.created_at),
+            }
+        )
+    return items
+
+
+def _log_activity_status(path: Path, window_sec: int = 300) -> dict[str, Any]:
+    if not path.exists():
+        return {"status": "missing"}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {"status": "error", "detail": "Cannot stat log"}
+    age = time.time() - mtime
+    return {
+        "status": "ok" if age <= window_sec else "stale",
+        "last_update": _format_ts(mtime),
+        "age_sec": int(age),
+        "path": str(path),
+    }
+
+
+def _cloudflared_status(settings) -> dict[str, Any]:
+    log_path = Path("logs/cloudflared.err.log")
+    if not log_path.exists():
+        return {"status": "missing", "detail": "cloudflared.err.log not found"}
+    lines = _tail_lines(log_path, 200)
+    error_markers = [
+        "Unable to establish connection",
+        "Failed to dial a quic connection",
+        "TLS handshake with edge error",
+    ]
+    ok_markers = ["Connected", "Registered", "Connection"]
+    status = "unknown"
+    detail = "no recent state"
+    joined = "\n".join(lines)
+    if any(marker in joined for marker in error_markers):
+        status = "error"
+        detail = "edge connection errors"
+    elif any(marker in joined for marker in ok_markers):
+        status = "ok"
+        detail = "connected"
+    activity = _log_activity_status(log_path, window_sec=300)
+    return {
+        "status": status,
+        "detail": detail,
+        "log": activity,
+    }
+
+
+def _service_status(settings) -> list[dict[str, Any]]:
+    services: list[dict[str, Any]] = [
+        {"name": "webapp", "status": "ok"},
+        {"name": "ollama", "status": "skip"},
+    ]
+    if settings.llm_provider.lower().strip() == "ollama":
+        services[1]["status"] = "pending"
+    services.append({"name": "cloudflared", **_cloudflared_status(settings)})
+
+    log_dir = Path("logs")
+    for name in ["bot.log", "main.log", "app.log"]:
+        path = log_dir / name
+        status = _log_activity_status(path, window_sec=300)
+        services.append({"name": name, **status})
+    return services
+
+
+async def _get_recent_errors(limit: int = 10) -> list[dict[str, Any]]:
+    async with get_session() as session:
+        stmt = (
+            select(WebAppRun)
+            .where(WebAppRun.error.is_not(None))
+            .order_by(WebAppRun.created_at.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        runs = result.scalars().all()
+    items: list[dict[str, Any]] = []
+    for run in runs:
+        items.append(
+            {
+                "id": run.id,
+                "user_id": run.user_id,
+                "style_channel": run.style_channel,
+                "status": run.status,
+                "error": run.error,
+                "created_at": _format_dt(run.created_at),
+            }
+        )
+    return items
+
+
+async def _get_counts() -> dict[str, int]:
+    async with get_session() as session:
+        channels = await session.execute(select(func.count(Channel.id)))
+        posts = await session.execute(select(func.count(Post.id)))
+        return {
+            "channels": int(channels.scalar() or 0),
+            "posts": int(posts.scalar() or 0),
+        }
+
+
 app = FastAPI(title="Cannibal WebApp")
 
 
@@ -120,6 +360,7 @@ async def _startup() -> None:
     app.state.brain = brain
     app.state.image_client = image_client
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+    app.state.started_at = time.time()
 
 
 @app.on_event("shutdown")
@@ -137,6 +378,112 @@ if WEBAPP_DIR.exists():
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(WEBAPP_DIR / "index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin() -> FileResponse:
+    return FileResponse(WEBAPP_DIR / "admin.html")
+
+
+@app.get("/api/admin/status")
+async def admin_status(request: Request, token: str | None = None) -> JSONResponse:
+    settings = app.state.settings
+    _require_admin_access(settings, request, _extract_admin_token(request, token))
+
+    db_path = Path(settings.sqlite_path)
+    db_path = db_path if db_path.is_absolute() else Path.cwd() / db_path
+    chroma_path = Path(settings.chroma_persist_dir)
+    chroma_path = chroma_path if chroma_path.is_absolute() else Path.cwd() / chroma_path
+    output_path = Path(settings.output_path)
+    output_path = output_path if output_path.is_absolute() else Path.cwd() / output_path
+
+    ollama_status = {"status": "skipped"}
+    if settings.llm_provider.lower().strip() == "ollama":
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.ollama_base_url, timeout=5.0
+            ) as http:
+                response = await http.get("/api/tags")
+                response.raise_for_status()
+            ollama_status = {"status": "ok"}
+        except Exception as exc:
+            ollama_status = {"status": "error", "error": str(exc)}
+    services = _service_status(settings)
+    for service in services:
+        if service.get("name") == "ollama":
+            service["status"] = ollama_status.get("status", "unknown")
+            if ollama_status.get("error"):
+                service["detail"] = ollama_status["error"]
+
+    counts = await _get_counts()
+    runs = await _get_recent_runs()
+    errors = await _get_recent_errors()
+    logs = _list_log_files(settings)
+
+    payload = {
+        "server_time": _format_dt(datetime.now(timezone.utc)),
+        "uptime_sec": int(time.time() - app.state.started_at),
+        "webapp_url": settings.webapp_url,
+        "webapp_host": settings.webapp_host,
+        "webapp_port": settings.webapp_port,
+        "llm_provider": settings.llm_provider,
+        "ollama_base_url": settings.ollama_base_url,
+        "ollama_model": settings.ollama_model,
+        "ollama_embedding_model": settings.ollama_embedding_model,
+        "ollama_status": ollama_status,
+        "image_enabled": settings.image_enabled,
+        "image_search_provider": settings.image_search_provider,
+        "image_generation_provider": settings.image_generation_provider,
+        "enforce_allowed_users": settings.enforce_allowed_users,
+        "allowed_users_count": len(settings.bot_allowed_users),
+        "db": {
+            "path": str(db_path),
+            "exists": db_path.exists(),
+            "size": _dir_size(db_path) if db_path.exists() else 0,
+            "modified_at": _format_ts(db_path.stat().st_mtime) if db_path.exists() else None,
+        },
+        "chroma": {
+            "path": str(chroma_path),
+            "exists": chroma_path.exists(),
+            "size": _dir_size(chroma_path) if chroma_path.exists() else 0,
+            "modified_at": _format_ts(chroma_path.stat().st_mtime) if chroma_path.exists() else None,
+        },
+        "output": {
+            "path": str(output_path),
+            "exists": output_path.exists(),
+            "size": _dir_size(output_path) if output_path.exists() else 0,
+            "modified_at": _format_ts(output_path.stat().st_mtime)
+            if output_path.exists()
+            else None,
+        },
+        "counts": counts,
+        "recent_runs": runs,
+        "recent_errors": errors,
+        "logs": logs,
+        "services": services,
+    }
+    return JSONResponse(payload)
+
+
+@app.get("/api/admin/logs/list")
+async def admin_logs_list(request: Request, token: str | None = None) -> JSONResponse:
+    settings = app.state.settings
+    _require_admin_access(settings, request, _extract_admin_token(request, token))
+    return JSONResponse({"items": _list_log_files(settings)})
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(
+    request: Request,
+    name: str,
+    lines: int = 200,
+    token: str | None = None,
+) -> JSONResponse:
+    settings = app.state.settings
+    _require_admin_access(settings, request, _extract_admin_token(request, token))
+    path = _resolve_log_path(settings, name)
+    content = _tail_lines(path, lines)
+    return JSONResponse({"name": path.name, "lines": content})
 
 
 @app.post("/api/run")

@@ -3,33 +3,28 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.cannibal.main</string>
+    <string>com.cannibal.maintenance</string>
 
     <key>ProgramArguments</key>
     <array>
       <string>/Users/daniilglusenko/Desktop/Cannibal/.venv/bin/python</string>
-      <string>-m</string>
-      <string>cannibal_core.main</string>
+      <string>/Users/daniilglusenko/Desktop/Cannibal/scripts/cleanup.py</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>/Users/daniilglusenko/Desktop/Cannibal</string>
 
-    <key>EnvironmentVariables</key>
+    <key>StartCalendarInterval</key>
     <dict>
-      <key>LOG_FILE</key>
-      <string>/Users/daniilglusenko/Desktop/Cannibal/logs/main.log</string>
+      <key>Hour</key>
+      <integer>3</integer>
+      <key>Minute</key>
+      <integer>30</integer>
     </dict>
 
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
-
     <key>StandardOutPath</key>
-    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/main.out.log</string>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/maintenance.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/main.err.log</string>
+    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/maintenance.err.log</string>
   </dict>
 </plist>

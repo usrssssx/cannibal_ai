@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     log_file: str | None = None
     log_rotation: str = "10 MB"
     log_retention: str = "14 days"
+    admin_token: str | None = None
+    data_retention_days: int = 90
+    runs_retention_days: int | None = None
+    logs_cleanup_days: int = 30
 
     bot_token: str | None = None
     bot_allowed_users: list[int] = Field(default_factory=list)

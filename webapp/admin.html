@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Cannibal Admin</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop">
+      <div class="orb orb-cyan"></div>
+      <div class="orb orb-amber"></div>
+      <div class="grid-lines"></div>
+    </div>
+
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Diagnostics</p>
+          <h1>Cannibal Admin</h1>
+          <p class="subtitle">
+            Статус сервиса, последние запуски и логи. Используйте только для
+            диагностики.
+          </p>
+        </div>
+        <div class="hero-card admin-card">
+          <div class="user-label">Админ‑токен</div>
+          <input
+            id="adminToken"
+            class="admin-input"
+            type="password"
+            placeholder="ADMIN_TOKEN"
+          />
+          <button id="saveToken" class="ghost">Сохранить</button>
+          <div id="authStatus" class="user-status">Токен не задан</div>
+        </div>
+      </header>
+
+      <section class="panel-grid">
+        <section class="panel panel-status">
+          <div class="panel-header">
+            <h2>Состояние</h2>
+            <p id="statusMeta">Ожидание данных…</p>
+          </div>
+          <div id="statusGrid" class="status-grid"></div>
+          <div class="panel-header admin-subtitle">
+            <h3>Сервисы</h3>
+          </div>
+          <div id="serviceGrid" class="status-grid"></div>
+          <div class="admin-actions">
+            <button id="refreshStatus" class="primary">Обновить</button>
+          </div>
+        </section>
+
+        <section class="panel panel-history">
+          <div class="panel-header">
+            <h2>Последние запуски</h2>
+            <p>История и ошибки WebApp.</p>
+          </div>
+          <div id="runList" class="admin-list"></div>
+          <div class="panel-header admin-subtitle">
+            <h3>Ошибки</h3>
+          </div>
+          <div id="errorList" class="admin-list"></div>
+        </section>
+
+        <section class="panel panel-logs">
+          <div class="panel-header">
+            <h2>Логи</h2>
+            <p>Быстрый просмотр tail‑логов.</p>
+          </div>
+          <div class="log-controls">
+            <select id="logSelect" class="admin-input"></select>
+            <input
+              id="logLines"
+              class="admin-input"
+              type="number"
+              min="50"
+              max="1000"
+              value="200"
+            />
+            <button id="logRefresh" class="ghost">Обновить</button>
+          </div>
+          <pre id="logContent" class="log-output">Ожидание…</pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="/assets/admin.js"></script>
+  </body>
+</html>

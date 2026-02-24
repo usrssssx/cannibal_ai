@@ -15,6 +15,12 @@
     <key>WorkingDirectory</key>
     <string>/Users/daniilglusenko/Desktop/Cannibal</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>LOG_FILE</key>
+      <string>/Users/daniilglusenko/Desktop/Cannibal/logs/bot.log</string>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

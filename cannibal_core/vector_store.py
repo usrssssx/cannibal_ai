@@ -82,3 +82,19 @@ class VectorStore:
         except Exception:
             logger.exception("Vector query failed")
             return {"distances": [[]], "ids": [[]]}
+
+    async def delete_older_than(self, before: datetime) -> None:
+        if before.tzinfo is None:
+            before = before.replace(tzinfo=timezone.utc)
+        else:
+            before = before.astimezone(timezone.utc)
+        cutoff = before.timestamp()
+
+        def _delete():
+            return self._collection.delete(where={"created_at": {"$lt": cutoff}})
+
+        try:
+            await asyncio.to_thread(_delete)
+            logger.info("Vector cleanup done (before {})", cutoff)
+        except Exception:
+            logger.exception("Vector cleanup failed")

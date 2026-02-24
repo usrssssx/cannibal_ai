@@ -3,15 +3,13 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.cannibal.cloudflared</string>
+    <string>com.cannibal.ngrok</string>
 
     <key>ProgramArguments</key>
     <array>
-      <string>/opt/homebrew/bin/cloudflared</string>
-      <string>tunnel</string>
-      <string>run</string>
-      <string>--token</string>
-      <string>YOUR_CLOUDFLARED_TUNNEL_TOKEN</string>
+      <string>/opt/homebrew/bin/ngrok</string>
+      <string>http</string>
+      <string>8000</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -21,8 +19,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/cloudflared.out.log</string>
+    <string>/Users/daniilglusenko/Library/Logs/Cannibal/ngrok.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/daniilglusenko/Desktop/Cannibal/logs/cloudflared.err.log</string>
+    <string>/Users/daniilglusenko/Library/Logs/Cannibal/ngrok.err.log</string>
   </dict>
 </plist>

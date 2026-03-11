@@ -6,6 +6,8 @@
 - Фильтрует рекламу по стоп‑словам.
 - Дедуплицирует посты по эмбеддингам (ChromaDB).
 - Переписывает уникальные посты в стиле админа через LLM.
+- Даёт editorial workflow в Mini App: источники за 30 дней, AI‑категории,
+  выбор исходных постов и генерация готовых драфтов в чат с ботом.
 - Опционально подбирает/генерирует изображение для поста.
 - Сохраняет сырой текст в SQLite.
 - Записывает итоговый текст в файл `OUTPUT_PATH`.
@@ -13,7 +15,7 @@
 ## Требования
 - Python 3.11+
 - Telethon userbot (нужны api_id и api_hash)
-- OpenAI или Ollama (по конфигу)
+- OpenAI, Ollama или OpenAI‑compatible `llama.cpp` server
 
 ## Установка
 ```bash
@@ -33,6 +35,7 @@ cp .env.example ./.env
 TELETHON_API_ID=...
 TELETHON_API_HASH=...
 TARGET_CHANNELS=channel_one,channel_two
+AUTO_STYLE_CHANNEL=admin_style_channel
 ```
 
 ### Ollama (по умолчанию)
@@ -67,6 +70,20 @@ OPENAI_MODEL=gpt-4o-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
+### llama.cpp
+Если у вас локально поднят OpenAI‑compatible server на `llama.cpp`, используйте:
+```
+LLM_PROVIDER=llama_cpp
+LLAMA_CPP_BASE_URL=http://localhost:8080
+LLAMA_CPP_MODEL=local-model
+# опционально, если embedding endpoint использует отдельную модель
+LLAMA_CPP_EMBEDDING_MODEL=local-model
+```
+
+Поддерживаются оба типовых варианта embedding API:
+- `/embedding`
+- `/v1/embeddings`
+
 ### Изображения (Pexels + Replicate)
 Комбо-режим: сначала поиск в Pexels, если не найдено — генерация в Replicate.
 ```
@@ -100,10 +117,15 @@ python -m cannibal_core.main
 ```
 
 При первом запуске Telethon запросит номер телефона и код подтверждения в терминале.
+Если задан `AUTO_STYLE_CHANNEL`, основной сервис будет переписывать входящие посты
+в стиле этого канала. Если переменная не задана, сервис использует fallback на
+профиль источника или встроенные примеры.
 
 ## Telegram бот
 Бот принимает команды и выдает посты в стиле выбранного канала. Бот использует
 ваш userbot‑аккаунт для чтения каналов, поэтому должен быть залогинен один раз.
+Также в бот можно переслать пост из нужного канала: источник сохранится для
+editorial workflow и появится в Mini App.
 
 ### Переменные окружения
 ```
@@ -138,8 +160,13 @@ python -m cannibal_core.bot
 ```
 
 ## WebApp
-WebApp открывается из бота и повторяет функционал: стиль, источники, лимит, запуск,
-и выдача постов с дублированием в чат.
+WebApp открывается из бота и теперь работает как редакторский pipeline:
+- канал‑референс для стиля;
+- список каналов‑источников;
+- AI‑сводка тем за последние 30 дней;
+- просмотр постов внутри темы;
+- выбор одного или нескольких исходников;
+- генерация итоговых постов с отправкой в чат с ботом.
 
 ### Настройки
 ```
@@ -156,6 +183,22 @@ CLOUDFLARED_TUNNEL_TOKEN=your_token
 ```bash
 python -m cannibal_core.webapp_server
 ```
+
+## Редакционный workflow
+Целевой сценарий для владельца канала:
+1. Открыть чат с ботом и зайти в Mini App.
+2. Указать свой канал как `style reference`.
+3. Добавить источники вручную или переслать боту посты из нужных каналов.
+4. Нажать `Обновить темы` и дождаться сводки за 30 дней.
+5. Открыть интересующую тему и выбрать один или несколько постов.
+6. Нажать `Сгенерировать`.
+7. Получить готовые тексты в Mini App и отдельными сообщениями в чате с ботом.
+
+Под капотом workflow устроен как newsroom orchestration:
+- `TopicPlannerAgent` выделяет редакционные темы периода.
+- `TopicClassifierAgent` назначает постам 1–3 категории.
+- `EditorialPlannerAgent` вытаскивает facts/brief из выбранного исходника.
+- `EditorialWriterAgent` пишет финальный пост в стиле референс‑канала.
 
 ### Публичный URL (локально)
 Рекомендовано использовать Cloudflare Tunnel со стабильным URL:
@@ -217,6 +260,12 @@ launchctl load ~/Library/LaunchAgents/com.cannibal.ngrok.plist
 - `EMBEDDING_MAX_CHARS` — ограничение длины текста для эмбеддингов (по умолчанию 2000).
 - `AD_STOP_WORDS` — стоп‑слова для рекламы.
 - `STYLE_PROFILE_POSTS` — число постов для авто‑профиля стиля (по умолчанию 80).
+- `AUTO_STYLE_CHANNEL` — канал, чей стиль использовать в автоматическом `main`‑режиме.
+- `EDITORIAL_TOPIC_WINDOW_DAYS` — окно обзора источников для Mini App (по умолчанию 30 дней).
+- `EDITORIAL_SOURCE_SYNC_LIMIT` — сколько последних сообщений читать с каждого источника.
+- `EDITORIAL_TOPIC_MAX_POSTS` — максимум постов, которые попадут в тематический отчёт.
+- `EDITORIAL_TOPIC_MAX_CATEGORIES` — максимум AI‑категорий в одном отчёте.
+- `EDITORIAL_TOPIC_BATCH_SIZE` — размер batch для multi‑label категоризации постов.
 - `STYLE_PROFILE_EXAMPLES` — сколько живых примеров постов добавлять в промпт (по умолчанию 4).
 - `STYLE_PROFILE_EXAMPLE_LIMIT` — сколько последних постов просматривать для примеров (по умолчанию 200).
 - `STYLE_PROFILE_EXAMPLE_MIN_CHARS` — минимальная длина примера (по умолчанию 40).
@@ -259,6 +308,8 @@ python -m cannibal_core.backfill --limit 100 --channels channel_one,channel_two
 передаёт его в промпт. Это повышает близость к “почерку автора”.
 
 Полезно:
+- для production‑сценария задайте `AUTO_STYLE_CHANNEL`, чтобы авто‑режим всегда
+  писал в едином Tone of Voice;
 - сначала выполнить backfill на 60–100 постов;
 - при обновлении корпуса перезапустить сервис.
 
@@ -279,15 +330,19 @@ bash scripts/backup.sh
 ```
 
 ## Миграции БД (Alembic)
-Инициализация актуальной схемы:
+Приложение при старте само доводит схему до `head` через Alembic.
+
+Ручной запуск:
+```bash
+python -m cannibal_core.migrate
+```
+
+Явный вызов Alembic тоже поддерживается:
 ```bash
 alembic upgrade head
 ```
-Если база уже создана приложением и таблицы есть, сначала пометьте её как актуальную:
-```bash
-alembic stamp head
-```
-Для полной переинициализации сделайте бэкап и удалите `cannibal.db`, затем выполните `alembic upgrade head`.
+Для полной переинициализации сделайте бэкап и удалите `cannibal.db`, затем выполните
+`python -m cannibal_core.migrate` или `alembic upgrade head`.
 
 Создание новой миграции после изменения моделей:
 ```bash
@@ -295,7 +350,7 @@ alembic revision --autogenerate -m "your message"
 ```
 
 ## Health check
-Мини‑проверка конфигурации и доступности Ollama:
+Мини‑проверка конфигурации и доступности LLM‑провайдера:
 ```bash
 python scripts/health_check.py
 ```
@@ -314,8 +369,9 @@ python -m cannibal_core.main
 python -m cannibal_core.bot
 python -m cannibal_core.webapp_server
 ```
-4) В боте: `/start` → задать стиль/источники → `Запуск`.
-5) В WebApp: заполнить форму → `Запустить`.
+4) В боте: `/start`, при необходимости переслать пост из нужного канала.
+5) В WebApp: указать канал стиля и источники → `Обновить темы`.
+6) Выбрать тему → отметить посты → `Сгенерировать`.
 
 ## CI/CD
 ### CI

@@ -5,16 +5,12 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from cannibal_core.config import get_settings
 from cannibal_core.database import Base
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.sqlite_sync_url)
 
 target_metadata = Base.metadata
 

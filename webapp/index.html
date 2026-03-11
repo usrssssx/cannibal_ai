@@ -37,16 +37,16 @@
       <section class="panel-grid">
         <section class="panel panel-form">
           <div class="panel-header">
-            <h2>Параметры</h2>
-            <p>Задайте стиль, источники и лимит.</p>
+            <h2>Редактура</h2>
+            <p>Выберите стиль, источники и соберите темы за 30 дней.</p>
           </div>
-          <form id="runForm" class="form">
+          <form id="topicForm" class="form">
             <label class="field">
               <span>Канал для стиля</span>
               <input
                 id="styleChannel"
                 type="text"
-                placeholder="например: zdravstvuitekuuuu"
+                placeholder="например: your_channel"
                 autocomplete="off"
               />
             </label>
@@ -54,23 +54,24 @@
               <span>Источники</span>
               <textarea
                 id="sourceChannels"
-                rows="3"
+                rows="4"
                 placeholder="Например: source_one, source_two"
               ></textarea>
             </label>
+            <div class="panel-note">
+              Можно переслать боту пост из нужного канала: источник сохранится и
+              подтянется сюда автоматически.
+            </div>
+            <div id="savedSources" class="sources-list"></div>
             <div class="field-row">
-              <label class="field">
-                <span>Лимит постов</span>
-                <input id="limit" type="number" min="1" max="50" value="1" />
-              </label>
               <label class="toggle">
                 <input id="withImages" type="checkbox" />
-                <span>Изображения</span>
+                <span>Генерировать изображения</span>
               </label>
             </div>
             <div class="actions">
-              <button id="runButton" type="submit" class="primary">
-                Запустить
+              <button id="refreshTopicsButton" type="submit" class="primary">
+                Обновить темы
               </button>
               <button id="resetButton" type="button" class="ghost">
                 Сброс
@@ -82,8 +83,8 @@
 
         <section class="panel panel-results">
           <div class="panel-header">
-            <h2>Результаты</h2>
-            <p id="resultsMeta">Готово к запуску.</p>
+            <h2>Темы</h2>
+            <p id="topicMeta">Сводка пока не построена.</p>
           </div>
           <div id="progressWrap" class="progress hidden">
             <div class="progress-label">
@@ -95,15 +96,28 @@
             </div>
           </div>
           <div id="toast" class="toast hidden"></div>
-          <div id="results" class="results"></div>
+          <div id="topicList" class="results"></div>
         </section>
 
         <section class="panel panel-history">
           <div class="panel-header">
-            <h2>История запусков</h2>
-            <p>Последние запросы WebApp.</p>
+            <h2>Посты в теме</h2>
+            <p id="topicPostsMeta">Выберите тему, чтобы увидеть исходные посты.</p>
           </div>
-          <div id="history" class="history"></div>
+          <div class="actions">
+            <button id="generateButton" type="button" class="primary" disabled>
+              Сгенерировать
+            </button>
+          </div>
+          <div id="topicPosts" class="history"></div>
+        </section>
+
+        <section class="panel panel-history">
+          <div class="panel-header">
+            <h2>Сгенерированные посты</h2>
+            <p id="resultsMeta">Результаты придут и сюда, и в чат с ботом.</p>
+          </div>
+          <div id="results" class="results"></div>
         </section>
       </section>
     </main>

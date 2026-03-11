@@ -22,6 +22,8 @@ class FakeBrain:
     def __init__(self, output: str) -> None:
         self.output = output
         self.calls = 0
+        self.last_style_profile = None
+        self.last_style_examples = None
 
     async def generate(
         self,
@@ -30,6 +32,8 @@ class FakeBrain:
         style_examples: list[str] | None = None,
     ) -> str:
         self.calls += 1
+        self.last_style_profile = style_profile
+        self.last_style_examples = style_examples
         return self.output
 
 
@@ -188,3 +192,40 @@ def test_processor_skips_already_processed(tmp_path):
     assert content.count("rewritten") == 1
     assert dedup.calls == 1
     assert brain.calls == 1
+
+
+def test_processor_prefers_default_style_bundle(tmp_path):
+    settings = _build_settings(tmp_path)
+    init_engine(settings)
+    asyncio.run(init_db())
+
+    dedup = FakeDeduplicator(
+        DedupResult(
+            is_duplicate=False,
+            similarity=0.8,
+            matched_id=None,
+            embedding=[0.1, 0.2],
+        )
+    )
+    brain = FakeBrain("rewritten")
+    store = FakeVectorStore()
+    processor = Processor(
+        settings,
+        dedup,
+        brain,
+        store,
+        default_style_profile="default-style",
+        default_style_examples=["example-one"],
+    )
+
+    asyncio.run(
+        processor.handle_message(
+            channel_name="channel",
+            channel_id=123,
+            message_id=10,
+            text="hello world",
+        )
+    )
+
+    assert brain.last_style_profile == "default-style"
+    assert brain.last_style_examples == ["example-one"]

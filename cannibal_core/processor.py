@@ -27,6 +27,8 @@ class Processor:
         style_profiles: StyleProfileCache | None = None,
         image_client: ImageClient | None = None,
         style_examples: StyleExamplesCache | None = None,
+        default_style_profile: str | None = None,
+        default_style_examples: list[str] | None = None,
     ) -> None:
         self._settings = settings
         self._deduplicator = deduplicator
@@ -35,6 +37,8 @@ class Processor:
         self._style_profiles = style_profiles
         self._image_client = image_client
         self._style_examples = style_examples
+        self._default_style_profile = default_style_profile
+        self._default_style_examples = default_style_examples
         self._queue: asyncio.Queue[dict] = asyncio.Queue(
             maxsize=settings.processor_queue_size
         )
@@ -96,11 +100,11 @@ class Processor:
         }
         await self._vector_store.add(doc_id, dedup.embedding, text, metadata)
 
-        style_profile = None
-        if self._style_profiles:
+        style_profile = self._default_style_profile
+        if style_profile is None and self._style_profiles:
             style_profile = self._style_profiles.get(channel_id, channel_name)
-        style_examples = None
-        if self._style_examples:
+        style_examples = self._default_style_examples
+        if style_examples is None and self._style_examples:
             style_examples = self._style_examples.get(channel_id, channel_name)
         rewritten = await self._brain.generate(
             text,

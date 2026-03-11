@@ -9,8 +9,11 @@ class DummyCollection:
     def __init__(self):
         self.calls = []
 
+    def add(self, **payload):
+        self.calls.append(("add", payload))
+
     def upsert(self, **payload):
-        self.calls.append(payload)
+        self.calls.append(("upsert", payload))
 
 
 class DummyClient:
@@ -19,6 +22,34 @@ class DummyClient:
 
     def get_or_create_collection(self, name, metadata):
         return self.collection
+
+
+def test_vector_store_add(monkeypatch):
+    collection = DummyCollection()
+    client = DummyClient(path=".")
+    client.collection = collection
+
+    monkeypatch.setattr(vector_store_module.chromadb, "PersistentClient", lambda path: client)
+
+    settings = SimpleNamespace(chroma_persist_dir=".", chroma_collection="test")
+    store = VectorStore(settings)
+
+    asyncio.run(
+        store.add(
+            doc_id="doc-1",
+            embedding=[0.1, 0.2],
+            document="hello",
+            metadata={"k": "v"},
+        )
+    )
+
+    assert len(collection.calls) == 1
+    mode, payload = collection.calls[0]
+    assert mode == "add"
+    assert payload["ids"] == ["doc-1"]
+    assert payload["embeddings"] == [[0.1, 0.2]]
+    assert payload["documents"] == ["hello"]
+    assert payload["metadatas"] == [{"k": "v"}]
 
 
 def test_vector_store_upsert(monkeypatch):
@@ -41,7 +72,8 @@ def test_vector_store_upsert(monkeypatch):
     )
 
     assert len(collection.calls) == 1
-    payload = collection.calls[0]
+    mode, payload = collection.calls[0]
+    assert mode == "upsert"
     assert payload["ids"] == ["doc-1"]
     assert payload["embeddings"] == [[0.1, 0.2]]
     assert payload["documents"] == ["hello"]

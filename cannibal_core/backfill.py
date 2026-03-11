@@ -185,6 +185,7 @@ async def main() -> None:
         )
 
     await client.disconnect()
+    await llm_client.aclose()
 
 
 if __name__ == "__main__":

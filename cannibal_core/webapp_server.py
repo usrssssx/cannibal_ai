@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,23 @@ from .config import get_settings
 from sqlalchemy import func, select
 
 from .database import Channel, Post, WebAppRun, WebAppSettings, get_session, init_db, init_engine
+from .editorial import (
+    NewsroomOrchestrator,
+    create_generation_run,
+    create_topic_report,
+    fail_generation_run,
+    fail_topic_report,
+    finish_generation_run,
+    finish_topic_report,
+    get_latest_topic_report,
+    get_source_posts_by_ids,
+    get_topic_posts,
+    list_editorial_sources,
+    refresh_editorial_posts,
+    resolve_editorial_source,
+    sync_editorial_settings,
+    upsert_editorial_sources,
+)
 from .generation import GenerationError, generate_posts, normalize_channel_ref
 from .image_client import ImageClient
 from .llm_client import LLMClient
@@ -40,6 +58,21 @@ class RunRequest(BaseModel):
     limit: int = Field(1, ge=1, le=50)
     with_images: bool = False
     save_settings: bool = True
+
+
+class EditorialTopicsRequest(BaseModel):
+    init_data: str = Field(..., description="Telegram WebApp initData")
+    style_channel: str
+    sources: list[str]
+    days: int = Field(30, ge=1, le=90)
+    save_settings: bool = True
+
+
+class EditorialGenerateRequest(BaseModel):
+    init_data: str = Field(..., description="Telegram WebApp initData")
+    style_channel: str
+    selected_post_ids: list[int]
+    with_images: bool = False
 
 
 def _parse_init_data(init_data: str) -> dict[str, str]:
@@ -87,6 +120,38 @@ def _split_message(text: str, limit: int = 3500) -> list[str]:
         parts.append(remaining[:limit])
         remaining = remaining[limit:]
     return parts
+
+
+def _normalize_sources(items: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        ref = normalize_channel_ref(item)
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        normalized.append(ref)
+    return normalized
+
+
+def _validate_user(settings, init_data: str) -> tuple[dict[str, Any], int]:
+    try:
+        init_payload = _verify_init_data(
+            init_data,
+            settings.bot_token or "",
+            settings.webapp_max_age_sec,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    user = init_payload.get("user") or {}
+    user_id = user.get("id")
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="User is missing in initData")
+    if settings.bot_allowed_users and user_id not in settings.bot_allowed_users:
+        raise HTTPException(status_code=403, detail="User is not allowed")
+    return user, int(user_id)
 
 
 def _extract_admin_token(request: Request, token: str | None) -> str | None:
@@ -278,9 +343,9 @@ def _cloudflared_status(settings) -> dict[str, Any]:
 def _service_status(settings) -> list[dict[str, Any]]:
     services: list[dict[str, Any]] = [
         {"name": "webapp", "status": "ok"},
-        {"name": "ollama", "status": "skip"},
+        {"name": "llm", "status": "skip", "detail": settings.llm_provider},
     ]
-    if settings.llm_provider.lower().strip() == "ollama":
+    if settings.llm_provider.lower().strip() in {"ollama", "llama_cpp"}:
         services[1]["status"] = "pending"
     services.append({"name": "cloudflared", **_cloudflared_status(settings)})
 
@@ -327,11 +392,8 @@ async def _get_counts() -> dict[str, int]:
         }
 
 
-app = FastAPI(title="Cannibal WebApp")
-
-
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings)
     if not settings.bot_token:
@@ -353,22 +415,32 @@ async def _startup() -> None:
     llm_client = LLMClient(settings)
     await llm_client.health_check()
     brain = Brain(llm_client, settings)
+    newsroom = NewsroomOrchestrator(llm_client, brain, settings)
     image_client = ImageClient(settings) if settings.image_enabled else None
 
     app.state.settings = settings
     app.state.user_client = user_client
+    app.state.llm_client = llm_client
     app.state.brain = brain
+    app.state.newsroom = newsroom
     app.state.image_client = image_client
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
     app.state.started_at = time.time()
+    try:
+        yield
+    finally:
+        http: httpx.AsyncClient = app.state.http
+        await http.aclose()
+        llm_client: LLMClient = app.state.llm_client
+        await llm_client.aclose()
+        image_client: ImageClient | None = app.state.image_client
+        if image_client:
+            await image_client.aclose()
+        user_client: TelegramClient = app.state.user_client
+        await user_client.disconnect()
 
 
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    http: httpx.AsyncClient = app.state.http
-    await http.aclose()
-    user_client: TelegramClient = app.state.user_client
-    await user_client.disconnect()
+app = FastAPI(title="Cannibal WebApp", lifespan=_lifespan)
 
 
 if WEBAPP_DIR.exists():
@@ -397,7 +469,10 @@ async def admin_status(request: Request, token: str | None = None) -> JSONRespon
     output_path = Path(settings.output_path)
     output_path = output_path if output_path.is_absolute() else Path.cwd() / output_path
 
-    ollama_status = {"status": "skipped"}
+    llm_status = {
+        "provider": settings.llm_provider,
+        "status": "external" if settings.llm_provider.lower().strip() == "openai" else "skipped",
+    }
     if settings.llm_provider.lower().strip() == "ollama":
         try:
             async with httpx.AsyncClient(
@@ -405,15 +480,25 @@ async def admin_status(request: Request, token: str | None = None) -> JSONRespon
             ) as http:
                 response = await http.get("/api/tags")
                 response.raise_for_status()
-            ollama_status = {"status": "ok"}
+            llm_status = {"provider": "ollama", "status": "ok"}
         except Exception as exc:
-            ollama_status = {"status": "error", "error": str(exc)}
+            llm_status = {"provider": "ollama", "status": "error", "error": str(exc)}
+    elif settings.llm_provider.lower().strip() == "llama_cpp":
+        base_url = settings.llama_cpp_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=5.0) as http:
+                response = await http.get("/v1/models")
+                response.raise_for_status()
+            llm_status = {"provider": "llama_cpp", "status": "ok"}
+        except Exception as exc:
+            llm_status = {"provider": "llama_cpp", "status": "error", "error": str(exc)}
     services = _service_status(settings)
     for service in services:
-        if service.get("name") == "ollama":
-            service["status"] = ollama_status.get("status", "unknown")
-            if ollama_status.get("error"):
-                service["detail"] = ollama_status["error"]
+        if service.get("name") == "llm":
+            service["status"] = llm_status.get("status", "unknown")
+            detail = llm_status.get("error") or llm_status.get("provider")
+            if detail:
+                service["detail"] = str(detail)
 
     counts = await _get_counts()
     runs = await _get_recent_runs()
@@ -427,10 +512,14 @@ async def admin_status(request: Request, token: str | None = None) -> JSONRespon
         "webapp_host": settings.webapp_host,
         "webapp_port": settings.webapp_port,
         "llm_provider": settings.llm_provider,
+        "llm_status": llm_status,
+        "llama_cpp_base_url": settings.llama_cpp_base_url,
+        "llama_cpp_model": settings.llama_cpp_model,
+        "llama_cpp_embedding_model": settings.llama_cpp_embedding_model,
         "ollama_base_url": settings.ollama_base_url,
         "ollama_model": settings.ollama_model,
         "ollama_embedding_model": settings.ollama_embedding_model,
-        "ollama_status": ollama_status,
+        "ollama_status": llm_status if settings.llm_provider.lower().strip() == "ollama" else {"status": "skipped"},
         "image_enabled": settings.image_enabled,
         "image_search_provider": settings.image_search_provider,
         "image_generation_provider": settings.image_generation_provider,
@@ -489,20 +578,7 @@ async def admin_logs(
 @app.post("/api/run")
 async def run_generation(payload: RunRequest) -> JSONResponse:
     settings = app.state.settings
-
-    try:
-        init_data = _verify_init_data(
-            payload.init_data,
-            settings.bot_token or "",
-            settings.webapp_max_age_sec,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-    user = init_data.get("user") or {}
-    user_id = user.get("id")
-    if settings.bot_allowed_users and user_id not in settings.bot_allowed_users:
-        raise HTTPException(status_code=403, detail="User is not allowed")
+    _user, user_id = _validate_user(settings, payload.init_data)
 
     style_channel = normalize_channel_ref(payload.style_channel)
     sources = [normalize_channel_ref(item) for item in payload.sources if item.strip()]
@@ -540,6 +616,15 @@ async def run_generation(payload: RunRequest) -> JSONResponse:
     except GenerationError as exc:
         await _store_run_finish(run_id, status="error", error=exc.message, posts_count=0)
         raise HTTPException(status_code=400, detail=exc.message) from exc
+    except Exception as exc:
+        logger.exception("WebApp generation failed")
+        await _store_run_finish(
+            run_id,
+            status="error",
+            error="Internal server error",
+            posts_count=0,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
 
     response_payload = {
         "posts": [
@@ -556,18 +641,24 @@ async def run_generation(payload: RunRequest) -> JSONResponse:
         "errors": errors,
     }
 
+    delivery_errors: list[str] = []
     if settings.webapp_duplicate_to_chat and user_id:
-        await _send_to_chat(
-            http=app.state.http,
-            bot_token=settings.bot_token or "",
-            chat_id=int(user_id),
-            payload=response_payload,
-        )
+        try:
+            await _send_to_chat(
+                http=app.state.http,
+                bot_token=settings.bot_token or "",
+                chat_id=int(user_id),
+                payload=response_payload,
+            )
+        except Exception:
+            logger.exception("Failed to duplicate WebApp response to chat")
+            delivery_errors.append("Не удалось отправить результаты в чат с ботом.")
+    response_payload["errors"] = errors + delivery_errors
 
     await _store_run_finish(
         run_id,
-        status="done",
-        error="; ".join(errors) if errors else None,
+        status="done" if not delivery_errors else "partial",
+        error="; ".join(response_payload["errors"]) if response_payload["errors"] else None,
         posts_count=len(results),
     )
 
@@ -577,43 +668,163 @@ async def run_generation(payload: RunRequest) -> JSONResponse:
 @app.get("/api/settings")
 async def get_settings_api(init_data: str) -> JSONResponse:
     settings = app.state.settings
-    try:
-        init_payload = _verify_init_data(
-            init_data,
-            settings.bot_token or "",
-            settings.webapp_max_age_sec,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-    user = init_payload.get("user") or {}
-    user_id = user.get("id")
-    if settings.bot_allowed_users and user_id not in settings.bot_allowed_users:
-        raise HTTPException(status_code=403, detail="User is not allowed")
-
-    data = await _get_settings(user_id=int(user_id))
+    _user, user_id = _validate_user(settings, init_data)
+    data = await _get_settings(user_id=user_id)
     return JSONResponse(data)
 
 
 @app.get("/api/history")
 async def get_history(init_data: str, limit: int = 20) -> JSONResponse:
     settings = app.state.settings
-    try:
-        init_payload = _verify_init_data(
-            init_data,
-            settings.bot_token or "",
-            settings.webapp_max_age_sec,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-    user = init_payload.get("user") or {}
-    user_id = user.get("id")
-    if settings.bot_allowed_users and user_id not in settings.bot_allowed_users:
-        raise HTTPException(status_code=403, detail="User is not allowed")
-
-    items = await _get_history(user_id=int(user_id), limit=limit)
+    _user, user_id = _validate_user(settings, init_data)
+    items = await _get_history(user_id=user_id, limit=limit)
     return JSONResponse({"items": items})
+
+
+@app.get("/api/editor/context")
+async def get_editorial_context(init_data: str) -> JSONResponse:
+    settings = app.state.settings
+    _user, user_id = _validate_user(settings, init_data)
+    saved = await _get_settings(user_id=user_id)
+    sources = await list_editorial_sources(user_id)
+    report = await get_latest_topic_report(user_id)
+    return JSONResponse(
+        {
+            "settings": saved,
+            "sources": sources,
+            "latest_report": report,
+        }
+    )
+
+
+@app.post("/api/editor/topics/refresh")
+async def refresh_editorial_topics(payload: EditorialTopicsRequest) -> JSONResponse:
+    settings = app.state.settings
+    _user, user_id = _validate_user(settings, payload.init_data)
+    style_channel = normalize_channel_ref(payload.style_channel)
+    sources = _normalize_sources(payload.sources)
+    if not style_channel:
+        raise HTTPException(status_code=400, detail="style_channel is empty")
+    if not sources:
+        raise HTTPException(status_code=400, detail="sources are empty")
+
+    resolved_sources: list[dict[str, Any]] = []
+    resolve_errors: list[str] = []
+    for source in sources:
+        try:
+            resolved_sources.append(
+                await resolve_editorial_source(app.state.user_client, source)
+            )
+        except Exception:
+            logger.exception("Failed to resolve editorial source {}", source)
+            resolve_errors.append(f"Не удалось распознать источник: {source}")
+    if not resolved_sources:
+        raise HTTPException(status_code=400, detail="No valid sources resolved")
+
+    source_refs = [item["channel_ref"] for item in resolved_sources]
+    if payload.save_settings:
+        await _upsert_settings(
+            user_id=user_id,
+            style_channel=style_channel,
+            sources=source_refs,
+            limit=1,
+            with_images=False,
+        )
+    await sync_editorial_settings(user_id, style_channel, source_refs)
+    await upsert_editorial_sources(user_id, resolved_sources, replace=True)
+
+    report_id = await create_topic_report(
+        user_id=user_id,
+        style_channel=style_channel,
+        sources=source_refs,
+        window_days=payload.days,
+    )
+    try:
+        posts, refresh_errors = await refresh_editorial_posts(
+            settings=settings,
+            user_client=app.state.user_client,
+            user_id=user_id,
+            days=payload.days,
+        )
+        topics, mapping = await app.state.newsroom.build_topics(posts)
+        all_errors = resolve_errors + refresh_errors
+        await finish_topic_report(report_id, topics, mapping, posts, all_errors)
+    except Exception as exc:
+        logger.exception("Editorial topic refresh failed")
+        await fail_topic_report(report_id, "Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+    report = await get_latest_topic_report(user_id)
+    return JSONResponse({"report": report, "errors": resolve_errors + refresh_errors})
+
+
+@app.get("/api/editor/topics/{topic_id}/posts")
+async def editorial_topic_posts(topic_id: int, init_data: str) -> JSONResponse:
+    settings = app.state.settings
+    _user, user_id = _validate_user(settings, init_data)
+    items = await get_topic_posts(user_id=user_id, topic_id=topic_id)
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/editor/generate")
+async def editorial_generate(payload: EditorialGenerateRequest) -> JSONResponse:
+    settings = app.state.settings
+    _user, user_id = _validate_user(settings, payload.init_data)
+    style_channel = normalize_channel_ref(payload.style_channel)
+    selected_post_ids = sorted({int(item) for item in payload.selected_post_ids if int(item) > 0})
+    if not style_channel:
+        raise HTTPException(status_code=400, detail="style_channel is empty")
+    if not selected_post_ids:
+        raise HTTPException(status_code=400, detail="selected_post_ids are empty")
+
+    run_id = await create_generation_run(user_id, style_channel, selected_post_ids)
+    image_client = app.state.image_client if payload.with_images else None
+    try:
+        posts = await get_source_posts_by_ids(user_id, selected_post_ids)
+        if not posts:
+            raise GenerationError("Не найдены выбранные посты.")
+        drafts = await app.state.newsroom.generate_drafts(
+            posts=posts,
+            style_channel=style_channel,
+            user_client=app.state.user_client,
+            image_client=image_client,
+        )
+    except GenerationError as exc:
+        await fail_generation_run(run_id, exc.message)
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except Exception as exc:
+        logger.exception("Editorial generation failed")
+        await fail_generation_run(run_id, "Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+    response_posts = []
+    for post, draft in zip(posts, drafts):
+        response_posts.append(
+            {
+                "source": post.source_ref,
+                "message_id": post.id,
+                "created_at": post.published_at.isoformat(),
+                "text": draft.text,
+                "image_url": draft.image_url,
+                "image_file": draft.image_file,
+            }
+        )
+    delivery_errors: list[str] = []
+    response_payload = {"posts": response_posts, "errors": delivery_errors}
+
+    try:
+        await _send_to_chat(
+            http=app.state.http,
+            bot_token=settings.bot_token or "",
+            chat_id=user_id,
+            payload=response_payload,
+        )
+    except Exception:
+        logger.exception("Failed to send editorial drafts to chat")
+        delivery_errors.append("Не удалось отправить результаты в чат с ботом.")
+
+    await finish_generation_run(run_id, drafts, errors=delivery_errors)
+    return JSONResponse(response_payload)
 
 
 async def _send_to_chat(
@@ -652,13 +863,17 @@ async def _send_message(
     text: str,
 ) -> None:
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    await http.post(
+    response = await http.post(
         url,
         json={
             "chat_id": chat_id,
             "text": text,
         },
     )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("ok", False):
+        raise RuntimeError(payload.get("description") or "Telegram Bot API request failed")
 
 
 async def _upsert_settings(

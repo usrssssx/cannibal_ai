@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -12,6 +13,7 @@ from .alerts import send_alert_sync
 from .brain import Brain
 from .config import get_settings
 from .database import init_db, init_engine
+from .editorial import resolve_editorial_source, upsert_editorial_sources
 from .generation import GenerationError, generate_posts, normalize_channel_ref
 from .image_client import ImageClient
 from .llm_client import LLMClient
@@ -31,6 +33,16 @@ def _format_channels(channels: list[str]) -> str:
     if not channels:
         return "—"
     return ", ".join(channels)
+
+
+def _normalize_channel(value: str) -> str:
+    return normalize_channel_ref(value)
+
+
+def _parse_channel_list(raw: str) -> list[str]:
+    parts = [part.strip() for part in re.split(r"[,\n]+", raw) if part.strip()]
+    channels = [_normalize_channel(part) for part in parts]
+    return [channel for channel in channels if channel]
 
 
 def _is_allowed(settings, user_id: int | None) -> bool:
@@ -178,6 +190,37 @@ async def _show_menu(event, settings, state: BotState, edit: bool = False) -> No
     await event.respond(text, buttons=buttons)
 
 
+async def _try_capture_forwarded_source(event, settings, user_client, state: BotState) -> bool:
+    message = getattr(event, "message", None)
+    forward = getattr(message, "forward", None)
+    chat = getattr(forward, "chat", None) if forward else None
+    if not chat:
+        return False
+
+    raw_ref = getattr(chat, "username", None) or getattr(chat, "id", None)
+    if raw_ref is None:
+        raw_ref = getattr(chat, "title", None)
+    if raw_ref is None:
+        return False
+
+    try:
+        source = await resolve_editorial_source(user_client, raw_ref)
+        source["added_via"] = "forward"
+        await upsert_editorial_sources(event.sender_id, [source], replace=False)
+    except Exception:
+        logger.exception("Failed to save forwarded source")
+        await event.reply("Не удалось распознать пересланный канал как источник.")
+        return True
+
+    channel_ref = source["channel_ref"]
+    if channel_ref not in state.source_channels:
+        state.source_channels.append(channel_ref)
+    state.awaiting = None
+    await event.reply(f"Источник сохранён из пересланного поста: {channel_ref}")
+    await _show_menu(event, settings, state, edit=False)
+    return True
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Telegram bot runner.")
     parser.add_argument(
@@ -267,7 +310,7 @@ async def main() -> None:
         if not _is_allowed(settings, event.sender_id):
             return
         raw = event.pattern_match.group(1)
-        channel = _normalize_channel_ref(raw)
+        channel = _normalize_channel(raw)
         if not channel:
             await event.reply("Укажи канал после /style.")
             return
@@ -282,9 +325,7 @@ async def main() -> None:
         if not _is_allowed(settings, event.sender_id):
             return
         raw = event.pattern_match.group(1)
-        parts = [part.strip() for part in re.split(r"[,\n]+", raw) if part.strip()]
-        channels = [_normalize_channel_ref(part) for part in parts]
-        channels = [ch for ch in channels if ch]
+        channels = _parse_channel_list(raw)
         if not channels:
             await event.reply("Укажи каналы через запятую после /sources.")
             return
@@ -337,15 +378,17 @@ async def main() -> None:
     async def _text_input(event):
         if not _is_allowed(settings, event.sender_id):
             return
+        state = state_by_user.setdefault(event.sender_id, BotState())
+        if await _try_capture_forwarded_source(event, settings, user_client, state):
+            return
         if not event.raw_text or event.raw_text.startswith("/"):
             return
-        state = state_by_user.get(event.sender_id)
-        if not state or not state.awaiting:
+        if not state.awaiting:
             return
 
         raw = event.raw_text.strip()
         if state.awaiting == "style":
-            channel = _normalize_channel_ref(raw)
+            channel = _normalize_channel(raw)
             if not channel:
                 await event.reply("Укажи канал для стиля.")
                 return
@@ -356,9 +399,7 @@ async def main() -> None:
             return
 
         if state.awaiting == "sources":
-            parts = [part.strip() for part in re.split(r"[,\n]+", raw) if part.strip()]
-            channels = [_normalize_channel_ref(part) for part in parts]
-            channels = [ch for ch in channels if ch]
+            channels = _parse_channel_list(raw)
             if not channels:
                 await event.reply("Укажи источники через запятую.")
                 return
@@ -462,7 +503,14 @@ async def main() -> None:
         await _show_menu(event, settings, state, edit=True)
 
     logger.info("Bot is running.")
-    await bot_client.run_until_disconnected()
+    try:
+        await bot_client.run_until_disconnected()
+    finally:
+        await bot_client.disconnect()
+        await user_client.disconnect()
+        if image_client:
+            await image_client.aclose()
+        await llm_client.aclose()
 
 
 if __name__ == "__main__":

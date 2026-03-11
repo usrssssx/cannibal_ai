@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from typing import Iterable
 
 import httpx
@@ -25,11 +26,27 @@ class LLMClient:
         self._embedding_max_chars = settings.embedding_max_chars
         self._rewrite_mode = settings.rewrite_mode
         self._rewrite_temperature = settings.rewrite_temperature
+        self._http: httpx.AsyncClient | None = None
+        self._client: AsyncOpenAI | None = None
         if self._provider == "openai":
             self._client = AsyncOpenAI(api_key=settings.openai_api_key)
-            self._http: httpx.AsyncClient | None = None
             self._model = settings.openai_model
             self._embedding_model = settings.openai_embedding_model
+        elif self._provider == "llama_cpp":
+            base_url = settings.llama_cpp_base_url.rstrip("/")
+            openai_base = base_url if base_url.endswith("/v1") else f"{base_url}/v1"
+            self._client = AsyncOpenAI(
+                api_key=settings.llama_cpp_api_key or "local",
+                base_url=openai_base,
+            )
+            self._http = httpx.AsyncClient(
+                base_url=base_url,
+                timeout=httpx.Timeout(60.0),
+            )
+            self._model = settings.llama_cpp_model
+            self._embedding_model = (
+                settings.llama_cpp_embedding_model or settings.llama_cpp_model
+            )
         else:
             self._client = None
             self._http = httpx.AsyncClient(
@@ -46,7 +63,17 @@ class LLMClient:
                 }
 
     async def health_check(self) -> None:
-        if self._provider != "ollama":
+        if self._provider == "openai":
+            return
+        if self._provider == "llama_cpp":
+            if not self._http:
+                raise RuntimeError("llama.cpp client is not initialized")
+            try:
+                response = await self._http.get("/v1/models", timeout=5.0)
+                response.raise_for_status()
+            except Exception as exc:
+                logger.error("llama.cpp health check failed: {}", exc)
+                raise
             return
         if not self._http:
             raise RuntimeError("Ollama client is not initialized")
@@ -69,11 +96,34 @@ class LLMClient:
         if self._embedding_max_chars and len(text) > self._embedding_max_chars:
             text = text[: self._embedding_max_chars]
         if self._provider == "openai":
+            if not self._client:
+                raise RuntimeError("OpenAI client is not initialized")
             response = await self._client.embeddings.create(
                 model=self._embedding_model,
                 input=text,
             )
             return response.data[0].embedding
+        if self._provider == "llama_cpp":
+            if not self._http:
+                raise RuntimeError("llama.cpp client is not initialized")
+            try:
+                response = await self._http.post(
+                    "/embedding",
+                    json={"content": text},
+                )
+                response.raise_for_status()
+                data = response.json()
+                if "embedding" in data:
+                    return data["embedding"]
+            except httpx.HTTPStatusError:
+                pass
+            response = await self._http.post(
+                "/v1/embeddings",
+                json={"model": self._embedding_model, "input": text},
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["data"][0]["embedding"]
 
         if not self._http:
             raise RuntimeError("Ollama client is not initialized")
@@ -84,6 +134,52 @@ class LLMClient:
         response.raise_for_status()
         data = response.json()
         return data["embedding"]
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type((OpenAIError, httpx.HTTPError)),
+        before_sleep=_log_retry,
+    )
+    async def chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        if self._provider in {"openai", "llama_cpp"}:
+            if not self._client:
+                raise RuntimeError("OpenAI-compatible client is not initialized")
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            content = response.choices[0].message.content or ""
+            return content.strip()
+
+        if not self._http:
+            raise RuntimeError("Ollama client is not initialized")
+        options = dict(self._ollama_options)
+        if temperature is not None:
+            options["temperature"] = temperature
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+        response = await self._http.post(
+            "/api/chat",
+            json={
+                "model": self._model,
+                "messages": messages,
+                "stream": False,
+                "options": options,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = (data.get("message") or {}).get("content") or ""
+        return content.strip()
 
     @retry(
         reraise=True,
@@ -139,28 +235,11 @@ class LLMClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        return await self.chat(messages, temperature=self._rewrite_temperature)
 
-        if self._provider == "openai":
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                temperature=self._rewrite_temperature,
-            )
-            content = response.choices[0].message.content or ""
-            return content.strip()
-
-        if not self._http:
-            raise RuntimeError("Ollama client is not initialized")
-        response = await self._http.post(
-            "/api/chat",
-            json={
-                "model": self._model,
-                "messages": messages,
-                "stream": False,
-                "options": self._ollama_options,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        content = (data.get("message") or {}).get("content") or ""
-        return content.strip()
+    async def aclose(self) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+        client = self._client
+        if client is not None and hasattr(client, "close"):
+            await client.close()

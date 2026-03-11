@@ -51,6 +51,11 @@ class FakeVectorStore:
 
 def test_backfill_channel_with_embeddings(monkeypatch):
     stored_posts = []
+    settings = SimpleNamespace(
+        telegram_retry_attempts=3,
+        telegram_flood_sleep_max=120,
+        telegram_retry_base_delay=1.0,
+    )
 
     async def fake_get_or_create_channel(name, channel_id):
         return SimpleNamespace(id=777)
@@ -74,6 +79,7 @@ def test_backfill_channel_with_embeddings(monkeypatch):
 
     asyncio.run(
         backfill._backfill_channel(
+            settings=settings,
             client=client,
             llm_client=llm,
             vector_store=vector_store,
@@ -101,6 +107,11 @@ def test_backfill_channel_with_embeddings(monkeypatch):
 
 def test_backfill_channel_without_embeddings(monkeypatch):
     stored_posts = []
+    settings = SimpleNamespace(
+        telegram_retry_attempts=3,
+        telegram_flood_sleep_max=120,
+        telegram_retry_base_delay=1.0,
+    )
 
     async def fake_get_or_create_channel(name, channel_id):
         return SimpleNamespace(id=321)
@@ -120,6 +131,7 @@ def test_backfill_channel_without_embeddings(monkeypatch):
 
     asyncio.run(
         backfill._backfill_channel(
+            settings=settings,
             client=client,
             llm_client=llm,
             vector_store=vector_store,

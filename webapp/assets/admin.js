@@ -66,6 +66,15 @@ function setAuthStatus(message, tone = "warn") {
 }
 
 function renderStatusCards(data) {
+  const llmLabel = data.llm_provider === "llama_cpp" ? "llama.cpp" : "LLM";
+  const llmValue =
+    data.llm_status?.status === "ok"
+      ? "OK"
+      : data.llm_status?.status === "error"
+      ? "Ошибка"
+      : data.llm_status?.status === "external"
+      ? "Внешний"
+      : "—";
   const cards = [
     {
       label: "Uptime",
@@ -76,13 +85,8 @@ function renderStatusCards(data) {
       value: data.webapp_url || "—",
     },
     {
-      label: "Ollama",
-      value:
-        data.ollama_status?.status === "ok"
-          ? "OK"
-          : data.ollama_status?.status === "error"
-          ? "Ошибка"
-          : "—",
+      label: llmLabel,
+      value: llmValue,
     },
     {
       label: "База",

@@ -3,13 +3,18 @@ const tg = window.Telegram ? window.Telegram.WebApp : null;
 const elements = {
   userName: document.getElementById("userName"),
   userStatus: document.getElementById("userStatus"),
-  form: document.getElementById("runForm"),
+  form: document.getElementById("topicForm"),
   styleChannel: document.getElementById("styleChannel"),
   sourceChannels: document.getElementById("sourceChannels"),
-  limit: document.getElementById("limit"),
   withImages: document.getElementById("withImages"),
-  runButton: document.getElementById("runButton"),
+  refreshTopicsButton: document.getElementById("refreshTopicsButton"),
   resetButton: document.getElementById("resetButton"),
+  generateButton: document.getElementById("generateButton"),
+  savedSources: document.getElementById("savedSources"),
+  topicMeta: document.getElementById("topicMeta"),
+  topicList: document.getElementById("topicList"),
+  topicPostsMeta: document.getElementById("topicPostsMeta"),
+  topicPosts: document.getElementById("topicPosts"),
   results: document.getElementById("results"),
   resultsMeta: document.getElementById("resultsMeta"),
   formHint: document.getElementById("formHint"),
@@ -18,13 +23,13 @@ const elements = {
   progressStep: document.getElementById("progressStep"),
   progressPercent: document.getElementById("progressPercent"),
   toast: document.getElementById("toast"),
-  history: document.getElementById("history"),
 };
-
-const STORAGE_KEY = "cannibal_webapp_settings";
 
 const state = {
   initData: "",
+  activeTopicId: null,
+  selectedPostIds: new Set(),
+  latestReport: null,
 };
 
 function setHint(message, tone = "muted") {
@@ -49,39 +54,11 @@ function setUserStatus(text, tone = "muted") {
     tone === "ok" ? "var(--accent)" : "var(--accent-2)";
 }
 
-function loadSettings() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return;
-  try {
-    const data = JSON.parse(raw);
-    elements.styleChannel.value = data.styleChannel || "";
-    elements.sourceChannels.value = data.sourceChannels || "";
-    elements.limit.value = data.limit || 1;
-    elements.withImages.checked = Boolean(data.withImages);
-  } catch (err) {
-    console.warn("Failed to load settings", err);
-  }
-}
-
-function saveSettings() {
-  const payload = {
-    styleChannel: elements.styleChannel.value.trim(),
-    sourceChannels: elements.sourceChannels.value.trim(),
-    limit: Number(elements.limit.value || 1),
-    withImages: elements.withImages.checked,
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-}
-
 function parseSources(raw) {
   return raw
-    .split(/[,\\n]+/)
+    .split(/[,\n]+/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function clearResults() {
-  elements.results.innerHTML = "";
 }
 
 function setProgress(step, percent) {
@@ -96,70 +73,256 @@ function hideProgress() {
   elements.progressFill.style.width = "0%";
 }
 
+function resetSelection() {
+  state.activeTopicId = null;
+  state.selectedPostIds = new Set();
+  elements.generateButton.disabled = true;
+  elements.topicPosts.innerHTML = "";
+  elements.topicPostsMeta.textContent =
+    "Выберите тему, чтобы увидеть исходные посты.";
+}
+
+function clearResults() {
+  elements.results.innerHTML = "";
+}
+
+function renderSavedSources(items) {
+  elements.savedSources.innerHTML = "";
+  if (!items || !items.length) {
+    return;
+  }
+  items.forEach((item) => {
+    const chip = document.createElement("div");
+    chip.className = "history-card";
+    const title = document.createElement("div");
+    title.className = "history-title";
+    title.textContent = item.channel_title || item.channel_ref;
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.textContent = item.channel_ref;
+    chip.appendChild(title);
+    chip.appendChild(meta);
+    elements.savedSources.appendChild(chip);
+  });
+}
+
+function renderTopics(report) {
+  state.latestReport = report || null;
+  elements.topicList.innerHTML = "";
+  resetSelection();
+  if (!report || !report.topics || !report.topics.length) {
+    elements.topicMeta.textContent = report
+      ? "Подходящие категории пока не найдены."
+      : "Сводка пока не построена.";
+    return;
+  }
+
+  const createdAt = report.created_at
+    ? new Date(report.created_at).toLocaleString("ru-RU")
+    : "—";
+  elements.topicMeta.textContent = `Последний отчет: ${createdAt}. Категорий: ${report.categories_count}, постов: ${report.posts_count}.`;
+
+  report.topics.forEach((topic) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "result-card topic-card";
+    card.dataset.topicId = String(topic.id);
+
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    const label = document.createElement("span");
+    label.textContent = topic.label;
+    const count = document.createElement("span");
+    count.className = "chip";
+    count.textContent = `${topic.post_count} постов`;
+    meta.appendChild(label);
+    meta.appendChild(count);
+
+    const summary = document.createElement("div");
+    summary.className = "result-text";
+    summary.textContent = topic.summary;
+
+    card.appendChild(meta);
+    card.appendChild(summary);
+    card.addEventListener("click", () => loadTopicPosts(topic.id));
+    elements.topicList.appendChild(card);
+  });
+}
+
+function updateGenerateButton() {
+  const count = state.selectedPostIds.size;
+  elements.generateButton.disabled = count === 0;
+  elements.generateButton.textContent = count
+    ? `Сгенерировать (${count})`
+    : "Сгенерировать";
+}
+
+function renderTopicPosts(items) {
+  elements.topicPosts.innerHTML = "";
+  if (!items.length) {
+    elements.topicPostsMeta.textContent = "В этой теме пока нет постов.";
+    updateGenerateButton();
+    return;
+  }
+  elements.topicPostsMeta.textContent =
+    "Выберите один или несколько постов для генерации.";
+  items.forEach((item) => {
+    const card = document.createElement("label");
+    card.className = "result-card post-card";
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "post-select";
+    check.checked = state.selectedPostIds.has(item.id);
+    check.addEventListener("change", () => {
+      if (check.checked) {
+        state.selectedPostIds.add(item.id);
+      } else {
+        state.selectedPostIds.delete(item.id);
+      }
+      updateGenerateButton();
+    });
+
+    const content = document.createElement("div");
+    content.className = "post-content";
+
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    const source = document.createElement("span");
+    source.textContent = item.source_title || item.source_ref;
+    const date = document.createElement("span");
+    date.textContent = item.published_at
+      ? new Date(item.published_at).toLocaleString("ru-RU")
+      : "—";
+    meta.appendChild(source);
+    meta.appendChild(date);
+
+    const text = document.createElement("div");
+    text.className = "result-text";
+    text.textContent = item.text;
+
+    content.appendChild(meta);
+    content.appendChild(text);
+    card.appendChild(check);
+    card.appendChild(content);
+    elements.topicPosts.appendChild(card);
+  });
+  updateGenerateButton();
+}
+
 function renderResults(posts, errors) {
   clearResults();
-  const total = posts.length;
-  elements.resultsMeta.textContent = total
-    ? `Готово. Постов: ${total}.`
-    : "Нет результатов.";
+  elements.resultsMeta.textContent = posts.length
+    ? `Готово. Постов: ${posts.length}. Они уже отправлены и в чат с ботом.`
+    : "Пока ничего не сгенерировано.";
 
-  if (errors.length) {
-    errors.forEach((err) => {
-      const card = document.createElement("div");
-      card.className = "result-card";
-      card.innerHTML = `<div class="result-meta"><span class="chip">Ошибка</span></div><div class="result-text">${err}</div>`;
-      elements.results.appendChild(card);
-    });
-  }
+  errors.forEach((err) => {
+    const card = document.createElement("div");
+    card.className = "result-card";
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Ошибка";
+    meta.appendChild(chip);
+    const text = document.createElement("div");
+    text.className = "result-text";
+    text.textContent = err;
+    card.appendChild(meta);
+    card.appendChild(text);
+    elements.results.appendChild(card);
+  });
 
   posts.forEach((post) => {
     const card = document.createElement("div");
     card.className = "result-card";
-    const chips = [];
-    if (post.image_url) chips.push(`<span class="chip">IMAGE_URL</span>`);
-    if (post.image_file) chips.push(`<span class="chip">IMAGE_FILE</span>`);
 
-    card.innerHTML = `
-      <div class="result-meta">
-        <span>${post.source}</span>
-        <span>${new Date(post.created_at).toLocaleString("ru-RU")}</span>
-      </div>
-      ${chips.length ? `<div class="result-meta">${chips.join("")}</div>` : ""}
-      <div class="result-text">${post.text}</div>
-    `;
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    const source = document.createElement("span");
+    source.textContent = post.source;
+    const date = document.createElement("span");
+    date.textContent = new Date(post.created_at).toLocaleString("ru-RU");
+    meta.appendChild(source);
+    meta.appendChild(date);
+
+    card.appendChild(meta);
+    if (post.image_url || post.image_file) {
+      const media = document.createElement("div");
+      media.className = "result-meta";
+      if (post.image_url) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = "IMAGE_URL";
+        media.appendChild(chip);
+      }
+      if (post.image_file) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = "IMAGE_FILE";
+        media.appendChild(chip);
+      }
+      card.appendChild(media);
+    }
+    const text = document.createElement("div");
+    text.className = "result-text";
+    text.textContent = post.text;
+    card.appendChild(text);
     elements.results.appendChild(card);
   });
 }
 
-function renderHistory(items) {
-  elements.history.innerHTML = "";
-  if (!items.length) {
-    elements.history.innerHTML = `<div class="history-card">История пока пустая.</div>`;
-    return;
+async function apiGet(path) {
+  const response = await fetch(path);
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || "Ошибка API");
   }
-  items.forEach((item) => {
-    const card = document.createElement("div");
-    card.className = "history-card";
-    const sources = item.sources?.join(", ") || "—";
-    card.innerHTML = `
-      <div class="history-title">
-        ${new Date(item.created_at).toLocaleString("ru-RU")}
-      </div>
-      <div class="history-meta">Стиль: ${item.style_channel}</div>
-      <div class="history-meta">Источники: ${sources}</div>
-      <div class="history-meta">Лимит: ${item.limit}</div>
-      <div class="history-meta">Статус: ${item.status} · Постов: ${item.posts_count}</div>
-      ${item.error ? `<div class="history-meta">Ошибка: ${item.error}</div>` : ""}
-    `;
-    elements.history.appendChild(card);
-  });
+  return data;
 }
 
-async function runGeneration() {
+async function apiPost(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || "Ошибка API");
+  }
+  return data;
+}
+
+async function loadContext() {
+  if (!state.initData) return;
+  try {
+    const data = await apiGet(
+      `/api/editor/context?init_data=${encodeURIComponent(state.initData)}`
+    );
+    const settings = data.settings || {};
+    const savedSources = data.sources || [];
+    if (settings.style_channel) {
+      elements.styleChannel.value = settings.style_channel;
+    }
+    elements.withImages.checked = Boolean(settings.with_images);
+    if (Array.isArray(settings.sources) && settings.sources.length) {
+      elements.sourceChannels.value = settings.sources.join(", ");
+    } else if (savedSources.length) {
+      elements.sourceChannels.value = savedSources
+        .map((item) => item.channel_ref)
+        .join(", ");
+    }
+    renderSavedSources(savedSources);
+    renderTopics(data.latest_report || null);
+  } catch (err) {
+    console.warn("Failed to load editorial context", err);
+  }
+}
+
+async function refreshTopics() {
   const styleChannel = elements.styleChannel.value.trim();
   const sources = parseSources(elements.sourceChannels.value);
-  const limit = Number(elements.limit.value || 1);
-
   if (!styleChannel) {
     setHint("Укажите канал для стиля.", "error");
     return;
@@ -168,64 +331,111 @@ async function runGeneration() {
     setHint("Укажите хотя бы один источник.", "error");
     return;
   }
-
   if (!state.initData) {
     setHint("Откройте WebApp через Telegram-бота.", "error");
     return;
   }
 
   hideToast();
-  setHint("Запуск…");
-  setProgress("Проверка доступа", 10);
-  elements.runButton.disabled = true;
+  setHint("Обновляю темы за 30 дней…");
+  setProgress("Сбор источников", 15);
+  elements.refreshTopicsButton.disabled = true;
 
   try {
-    setProgress("Отправка запроса", 25);
-    const response = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        init_data: state.initData,
-        style_channel: styleChannel,
-        sources,
-        limit,
-        with_images: elements.withImages.checked,
-        save_settings: true,
-      }),
+    const data = await apiPost("/api/editor/topics/refresh", {
+      init_data: state.initData,
+      style_channel: styleChannel,
+      sources,
+      days: 30,
+      save_settings: true,
     });
-    setProgress("Получение ответа", 70);
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "Ошибка сервера");
-    }
-    renderResults(data.posts || [], data.errors || []);
+    setProgress("Категоризация", 75);
+    renderTopics(data.report || null);
+    await loadContext();
     setProgress("Готово", 100);
-    await loadHistory();
-    setHint("Готово.");
+    setHint("Темы обновлены.");
+    if (data.errors && data.errors.length) {
+      showToast(data.errors.join("\n"));
+    }
   } catch (err) {
     console.error(err);
-    showToast(err.message || "Ошибка запроса");
-    setHint(err.message || "Ошибка запроса", "error");
+    showToast(err.message || "Ошибка обновления тем");
+    setHint(err.message || "Ошибка обновления тем", "error");
   } finally {
-    elements.runButton.disabled = false;
+    elements.refreshTopicsButton.disabled = false;
+    setTimeout(hideProgress, 800);
+  }
+}
+
+async function loadTopicPosts(topicId) {
+  state.activeTopicId = topicId;
+  elements.topicPostsMeta.textContent = "Загружаю посты…";
+  try {
+    const data = await apiGet(
+      `/api/editor/topics/${topicId}/posts?init_data=${encodeURIComponent(
+        state.initData
+      )}`
+    );
+    renderTopicPosts(data.items || []);
+  } catch (err) {
+    console.error(err);
+    elements.topicPostsMeta.textContent = err.message || "Ошибка загрузки постов";
+  }
+}
+
+async function generateSelected() {
+  const styleChannel = elements.styleChannel.value.trim();
+  const selectedPostIds = Array.from(state.selectedPostIds);
+  if (!styleChannel) {
+    setHint("Укажите канал для стиля.", "error");
+    return;
+  }
+  if (!selectedPostIds.length) {
+    setHint("Выберите хотя бы один пост.", "error");
+    return;
+  }
+
+  hideToast();
+  setHint("Генерирую посты и отправляю их в чат с ботом…");
+  setProgress("Генерация", 30);
+  elements.generateButton.disabled = true;
+
+  try {
+    const data = await apiPost("/api/editor/generate", {
+      init_data: state.initData,
+      style_channel: styleChannel,
+      selected_post_ids: selectedPostIds,
+      with_images: elements.withImages.checked,
+    });
+    renderResults(data.posts || [], data.errors || []);
+    setProgress("Отправка в чат", 100);
+    setHint("Готово. Результаты отправлены в чат с ботом.");
+  } catch (err) {
+    console.error(err);
+    showToast(err.message || "Ошибка генерации");
+    setHint(err.message || "Ошибка генерации", "error");
+  } finally {
+    updateGenerateButton();
     setTimeout(hideProgress, 800);
   }
 }
 
 elements.form.addEventListener("submit", (event) => {
   event.preventDefault();
-  saveSettings();
-  runGeneration();
+  refreshTopics();
 });
 
 elements.resetButton.addEventListener("click", () => {
-  localStorage.removeItem(STORAGE_KEY);
   elements.styleChannel.value = "";
   elements.sourceChannels.value = "";
-  elements.limit.value = 1;
   elements.withImages.checked = false;
+  resetSelection();
+  clearResults();
+  renderTopics(null);
   setHint("Поля очищены.");
 });
+
+elements.generateButton.addEventListener("click", generateSelected);
 
 if (tg) {
   tg.ready();
@@ -242,46 +452,4 @@ if (tg) {
   setUserStatus("Откройте внутри Telegram", "warn");
 }
 
-loadSettings();
-
-async function loadServerSettings() {
-  if (!state.initData) return;
-  try {
-    const response = await fetch(`/api/settings?init_data=${encodeURIComponent(state.initData)}`);
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "Ошибка настроек");
-    }
-    if (data.style_channel) {
-      elements.styleChannel.value = data.style_channel;
-    }
-    if (Array.isArray(data.sources) && data.sources.length) {
-      elements.sourceChannels.value = data.sources.join(", ");
-    }
-    if (data.limit) {
-      elements.limit.value = data.limit;
-    }
-    if (typeof data.with_images === "boolean") {
-      elements.withImages.checked = data.with_images;
-    }
-  } catch (err) {
-    console.warn("Failed to load settings", err);
-  }
-}
-
-async function loadHistory() {
-  if (!state.initData) return;
-  try {
-    const response = await fetch(`/api/history?init_data=${encodeURIComponent(state.initData)}`);
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "Ошибка истории");
-    }
-    renderHistory(data.items || []);
-  } catch (err) {
-    console.warn("Failed to load history", err);
-  }
-}
-
-loadServerSettings();
-loadHistory();
+loadContext();

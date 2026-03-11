@@ -244,3 +244,6 @@ class ImageClient:
             return None
 
         return str(out_path)
+
+    async def aclose(self) -> None:
+        await self._http.aclose()

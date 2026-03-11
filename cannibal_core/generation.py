@@ -28,6 +28,13 @@ class GeneratedPost:
     image_file: str | None
 
 
+@dataclass(slots=True)
+class PreparedStyle:
+    channel_name: str
+    profile: str
+    examples: list[str]
+
+
 class GenerationError(RuntimeError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -169,24 +176,18 @@ async def fetch_source_posts(
     return results
 
 
-async def generate_posts(
+async def prepare_style_bundle(
     settings: Settings,
-    user_client: TelegramClient,
-    brain: Brain,
-    image_client: ImageClient | None,
+    client: TelegramClient,
     style_channel: str,
-    source_channels: list[str],
-    limit: int,
-) -> tuple[list[GeneratedPost], list[str]]:
+) -> PreparedStyle:
     if not style_channel:
         raise GenerationError("Канал стиля не задан.")
-    if not source_channels:
-        raise GenerationError("Источники не заданы.")
 
     try:
         style_channel_name = await ensure_style_corpus(
             settings=settings,
-            client=user_client,
+            client=client,
             channel_ref=style_channel,
             limit=settings.bot_style_limit,
             stop_words=settings.ad_stop_words,
@@ -214,6 +215,31 @@ async def generate_posts(
 
     if not style_profile:
         raise GenerationError("Недостаточно постов для профиля стиля.")
+
+    return PreparedStyle(
+        channel_name=style_channel_name,
+        profile=style_profile,
+        examples=examples or [],
+    )
+
+
+async def generate_posts(
+    settings: Settings,
+    user_client: TelegramClient,
+    brain: Brain,
+    image_client: ImageClient | None,
+    style_channel: str,
+    source_channels: list[str],
+    limit: int,
+) -> tuple[list[GeneratedPost], list[str]]:
+    if not source_channels:
+        raise GenerationError("Источники не заданы.")
+
+    style = await prepare_style_bundle(
+        settings=settings,
+        client=user_client,
+        style_channel=style_channel,
+    )
 
     results: list[GeneratedPost] = []
     errors: list[str] = []
@@ -243,8 +269,8 @@ async def generate_posts(
         for channel_name, message_id, text, created_at in posts:
             rewritten = await brain.generate(
                 text,
-                style_profile=style_profile,
-                style_examples=examples,
+                style_profile=style.profile,
+                style_examples=style.examples,
             )
             image_result = None
             if image_client:

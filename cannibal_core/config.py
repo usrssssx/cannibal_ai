@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     ollama_mirostat_eta: float | None = None
     ollama_num_thread: int | None = None
 
+    llama_cpp_base_url: str = "http://localhost:8080"
+    llama_cpp_api_key: str | None = "local"
+    llama_cpp_model: str = "local-model"
+    llama_cpp_embedding_model: str | None = None
+
     image_enabled: bool = False
     image_search_provider: str = "pexels"
     image_generation_provider: str = "replicate"
@@ -135,6 +140,12 @@ class Settings(BaseSettings):
     style_profile_example_limit: int = 200
     style_profile_example_min_chars: int = 40
     style_profile_example_max_chars: int = 400
+    auto_style_channel: str | None = None
+    editorial_topic_window_days: int = 30
+    editorial_source_sync_limit: int = 300
+    editorial_topic_max_posts: int = 240
+    editorial_topic_max_categories: int = 10
+    editorial_topic_batch_size: int = 24
     rewrite_mode: str = "balanced"
     rewrite_temperature: float = 0.4
 
@@ -247,6 +258,16 @@ class Settings(BaseSettings):
             return [part.strip() for part in value.split("||") if part.strip()]
         return value
 
+    @field_validator("auto_style_channel", mode="before")
+    @classmethod
+    def _parse_auto_style_channel(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return cleaned or None
+        return value
+
     @field_validator("rewrite_mode", mode="before")
     @classmethod
     def _parse_rewrite_mode(cls, value):
@@ -259,8 +280,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _validate_provider(self):
         provider = self.llm_provider.lower().strip()
-        if provider not in {"openai", "ollama"}:
-            raise ValueError("LLM_PROVIDER must be 'openai' or 'ollama'")
+        if provider not in {"openai", "ollama", "llama_cpp"}:
+            raise ValueError("LLM_PROVIDER must be 'openai', 'ollama' or 'llama_cpp'")
         if provider == "openai" and not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
         if provider == "ollama":
@@ -271,6 +292,15 @@ class Settings(BaseSettings):
             if not self.ollama_embedding_model:
                 raise ValueError(
                     "OLLAMA_EMBEDDING_MODEL is required when LLM_PROVIDER=ollama"
+                )
+        if provider == "llama_cpp":
+            if not self.llama_cpp_base_url:
+                raise ValueError(
+                    "LLAMA_CPP_BASE_URL is required when LLM_PROVIDER=llama_cpp"
+                )
+            if not self.llama_cpp_model:
+                raise ValueError(
+                    "LLAMA_CPP_MODEL is required when LLM_PROVIDER=llama_cpp"
                 )
         if self.image_enabled:
             if self.image_search_provider.lower().strip() != "pexels":
